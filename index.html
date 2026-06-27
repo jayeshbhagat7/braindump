@@ -10,7 +10,7 @@
   <meta name="theme-color" content="#16a34a"/>
   <link rel="manifest" href="manifest.json"/>
   <link rel="icon" href="icon.svg"/>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="styles.css"/>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -23,7 +23,7 @@
 <body>
 <div id="root">
   <div style="height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:#a8a29e">
-    <span style="font-size:56px">&#x1F9E0;</span>
+    <span style="font-size:56px">🧠</span>
     <span style="font-size:14px;font-weight:600">Loading&hellip;</span>
   </div>
 </div>
@@ -201,11 +201,11 @@ function DumpView({text,setText,onAdd,total}){
   return html`
     <div class="p-5 pt-8 flex flex-col gap-4">
       <div class="text-center">
-        <div style=${{fontSize:56}} class="mb-2">&#x1F9E0;</div>
+        <div style=${{fontSize:56}} class="mb-2">🧠</div>
         <h2 class="text-2xl font-black text-stone-800">Brain Dump</h2>
         <p class="text-sm text-stone-500 mt-1">One thought per line. No judgment.</p>
       </div>
-      <textarea value=${text} onInput=${e=>setText(e.target.value)} autofocus
+      <textarea value=${text} onInput=${e=>setText(e.target.value)}
         placeholder="bike repair&#10;EV car exchange&#10;new supervisor&#10;safety concern&#10;..."
         class="w-full h-52 p-4 rounded-2xl border border-stone-200 bg-white text-stone-800 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 shadow-sm leading-relaxed"></textarea>
       <button onClick=${onAdd} disabled=${!n} class="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700 disabled:opacity-40">
@@ -223,16 +223,16 @@ function Card({task,onComplete,onEdit}){
   return html`
     <div onClick=${()=>!done&&onEdit(task)} class=${'bg-white rounded-2xl border mx-4 mb-2.5 px-4 py-3.5 flex gap-3 items-start shadow-sm '+(over&&!done?'border-red-200':'border-stone-100')}>
       <button onClick=${ev=>{ev.stopPropagation();onComplete(task.id)}} class=${'mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center '+(done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
-        ${done && html`<span style=${{color:'white',fontWeight:900,fontSize:9}}>&#x2713;</span>`}
+        ${done && html`<span style=${{color:'white',fontWeight:900,fontSize:9}}>✓</span>`}
       </button>
       <div class="flex-1 min-w-0">
         <p class=${'text-sm leading-snug '+(done?'line-through text-stone-400':'text-stone-800')}>${task.text}</p>
         <div class="flex flex-wrap gap-1 mt-1.5">
-          ${task.dueDate && html`<span class=${'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+(over&&!done?'bg-red-50 text-red-500 border-red-200':'bg-emerald-50 text-emerald-700 border-emerald-100')}>&#x1F4C5; ${fmtDate(task.dueDate)}</span>`}
-          ${task.calendarEventId && html`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-500 border border-blue-100">&#x1F4C6; Cal</span>`}
+          ${task.dueDate && html`<span class=${'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+(over&&!done?'bg-red-50 text-red-500 border-red-200':'bg-emerald-50 text-emerald-700 border-emerald-100')}>📅 ${fmtDate(task.dueDate)}</span>`}
+          ${task.calendarEventId && html`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-500 border border-blue-100">📆 Cal</span>`}
           ${task.priority && html`<span class=${'text-[10px] px-1.5 py-0.5 rounded-full font-bold border '+PS[task.priority]}>${PF[task.priority]} ${task.priority}</span>`}
           ${q && html`<span class=${'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+q.c}>${q.s}</span>`}
-          ${task.type==='wish' && html`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-100">&#x2728; Wish</span>`}
+          ${task.type==='wish' && html`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-100">✨ Wish</span>`}
           ${(task.labels||[]).map(l=>html`<span key=${l} class="text-[10px] px-1.5 py-0.5 rounded-full bg-stone-100 text-stone-500 border border-stone-200">${l}</span>`)}
         </div>
       </div>
@@ -246,15 +246,15 @@ function InboxView({tasks,onComplete,onEdit}){
   return html`
     <div class="pt-5 pb-4">
       <div class="px-4 mb-4">
-        <h2 class="text-xl font-black text-stone-800">&#x1F4E5; Inbox</h2>
-        <p class="text-xs text-stone-500 mt-0.5">Tap to triage &#x2014; set date, priority, labels</p>
+        <h2 class="text-xl font-black text-stone-800">📥 Inbox</h2>
+        <p class="text-xs text-stone-500 mt-0.5">Tap to triage — set date, priority, labels</p>
       </div>
-      ${!tasks.length && html`<${Empty} i="&#x1F4ED;" t="Inbox zero! &#x1F389;" s="Brain dump something to fill it up"/>`}
+      ${!tasks.length && html`<${Empty} i="📭" t="Inbox zero! 🎉" s="Brain dump something to fill it up"/>`}
       ${reg.map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
       ${wsh.length>0 && html`
         <div>
           <div class="px-4 pt-4 pb-1.5">
-            <p class="text-xs font-black text-violet-500 uppercase tracking-widest">&#x2728; Wishes &amp; Ideas</p>
+            <p class="text-xs font-black text-violet-500 uppercase tracking-widest">✨ Wishes &amp; Ideas</p>
             <p class="text-[10px] text-stone-400 mt-0.5">Auto-archived after 7 days if untouched</p>
           </div>
           ${wsh.map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
@@ -268,22 +268,22 @@ function InboxView({tasks,onComplete,onEdit}){
 function TodoView({tasks,onComplete,onEdit}){
   const td=todayISO(),tm=addDays(1);
   const grps=[
-    {l:'&#x1F534; Overdue',ts:tasks.filter(t=>t.dueDate<td)},
-    {l:'&#x1F4CC; Today',ts:tasks.filter(t=>t.dueDate===td)},
-    {l:'&#x1F305; Tomorrow',ts:tasks.filter(t=>t.dueDate===tm)},
-    {l:'&#x1F4C5; This Week',ts:tasks.filter(t=>t.dueDate>tm&&withinN(t.dueDate,7))},
-    {l:'&#x1F5D3; Later',ts:tasks.filter(t=>!withinN(t.dueDate,7)&&t.dueDate>td)},
+    {l:'🔴 Overdue',ts:tasks.filter(t=>t.dueDate<td)},
+    {l:'📌 Today',ts:tasks.filter(t=>t.dueDate===td)},
+    {l:'🌅 Tomorrow',ts:tasks.filter(t=>t.dueDate===tm)},
+    {l:'📅 This Week',ts:tasks.filter(t=>t.dueDate>tm&&withinN(t.dueDate,7))},
+    {l:'🗓️ Later',ts:tasks.filter(t=>!withinN(t.dueDate,7)&&t.dueDate>td)},
   ].filter(g=>g.ts.length);
   return html`
     <div class="pt-5 pb-4">
       <div class="px-4 mb-4">
-        <h2 class="text-xl font-black text-stone-800">&#x2611;&#xFE0F; To-Do</h2>
+        <h2 class="text-xl font-black text-stone-800">☑️ To-Do</h2>
         <p class="text-xs text-stone-500 mt-0.5">Assign dates in Inbox to see tasks here</p>
       </div>
-      ${!grps.length && html`<${Empty} i="&#x1F5D2;&#xFE0F;" t="No scheduled tasks" s="Tap tasks in Inbox to assign a date"/>`}
+      ${!grps.length && html`<${Empty} i="🗒️" t="No scheduled tasks" s="Tap tasks in Inbox to assign a date"/>`}
       ${grps.map(g=>html`
         <div key=${g.l}>
-          <div class="px-4 pt-3 pb-1.5"><p class="text-[11px] font-black text-stone-400 uppercase tracking-widest" dangerouslySetInnerHTML=${{__html:g.l}}></p></div>
+          <div class="px-4 pt-3 pb-1.5"><p class="text-[11px] font-black text-stone-400 uppercase tracking-widest">${g.l}</p></div>
           ${g.ts.map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
         </div>
       `)}
@@ -296,7 +296,7 @@ function MatrixView({tasks,onEdit,onComplete}){
   const unset=tasks.filter(t=>!t.eisenhower);
   return html`
     <div class="p-4 pt-5 pb-4">
-      <h2 class="text-xl font-black text-stone-800 mb-0.5">&#x1F3AF; Eisenhower Matrix</h2>
+      <h2 class="text-xl font-black text-stone-800 mb-0.5">🎯 Eisenhower Matrix</h2>
       <p class="text-xs text-stone-500 mb-3">Tap any task to assign its quadrant</p>
       <div class="grid grid-cols-2 gap-2">
         ${EIS.map(q=>{const qt=tasks.filter(t=>t.eisenhower===q.k);return html`
@@ -315,12 +315,12 @@ function MatrixView({tasks,onEdit,onComplete}){
         `})}
       </div>
       <div class="flex justify-between px-1 mt-1">
-        <span style=${{fontSize:9}} class="text-stone-400">&#x2190; Not Urgent</span>
-        <span style=${{fontSize:9}} class="text-stone-400">Urgent &#x2192;</span>
+        <span style=${{fontSize:9}} class="text-stone-400">← Not Urgent</span>
+        <span style=${{fontSize:9}} class="text-stone-400">Urgent →</span>
       </div>
       ${unset.length>0 && html`
         <div class="mt-4">
-          <p class="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">&#x25A1; Uncategorized (${unset.length})</p>
+          <p class="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">⬜ Uncategorized (${unset.length})</p>
           ${unset.slice(0,4).map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
           ${unset.length>4 && html`<p class="text-center text-xs text-stone-400 mt-1">+${unset.length-4} more in Inbox / Todo</p>`}
         </div>
@@ -334,41 +334,41 @@ function DoneView({done,arch,sub,setSub,onUndo,onRestore,onDel}){
   return html`
     <div class="pt-5 pb-4">
       <div class="px-4 mb-4 flex gap-5 border-b border-stone-100 pb-3">
-        ${[['completed','&#x2705; Done',done.length],['archived','&#x1F4E6; Archive',arch.length]].map(([k,l,n])=>html`
+        ${[['completed','✅ Done',done.length],['archived','📦 Archive',arch.length]].map(([k,l,n])=>html`
           <button key=${k} onClick=${()=>setSub(k)} class=${'text-sm font-black pb-1 border-b-2 -mb-[13px] '+(sub===k?'border-emerald-500 text-emerald-700':'border-transparent text-stone-400')}>
-            <span dangerouslySetInnerHTML=${{__html:l}}></span> <span class="font-normal text-xs opacity-60">(${n})</span>
+            ${l} <span class="font-normal text-xs opacity-60">(${n})</span>
           </button>
         `)}
       </div>
       ${sub==='completed' && html`
         <div>
-          ${!done.length && html`<${Empty} i="&#x1F3C6;" t="Nothing completed yet" s="Finish tasks and they appear here"/>`}
+          ${!done.length && html`<${Empty} i="🏆" t="Nothing completed yet" s="Finish tasks and they appear here"/>`}
           ${done.map(t=>html`
             <div key=${t.id} class="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-3 items-center shadow-sm">
               <button onClick=${()=>onUndo(t.id)} class="w-5 h-5 rounded-full bg-emerald-500 border-2 border-emerald-500 flex-shrink-0 flex items-center justify-center">
-                <span style=${{color:'white',fontWeight:900,fontSize:9}}>&#x2713;</span>
+                <span style=${{color:'white',fontWeight:900,fontSize:9}}>✓</span>
               </button>
               <div class="flex-1 min-w-0">
                 <p class="text-sm line-through text-stone-400 truncate">${t.text}</p>
                 <p class="text-[10px] text-stone-400">${t.completedAt?new Date(t.completedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):''}</p>
               </div>
-              <button onClick=${()=>onDel(t.id)} class="text-stone-200 text-xl active:text-red-400">&#xD7;</button>
+              <button onClick=${()=>onDel(t.id)} class="text-stone-200 text-xl active:text-red-400">×</button>
             </div>
           `)}
         </div>
       `}
       ${sub==='archived' && html`
         <div>
-          ${!arch.length && html`<${Empty} i="&#x1F4E6;" t="Archive is empty" s="Archived and auto-archived wishes live here"/>`}
+          ${!arch.length && html`<${Empty} i="📦" t="Archive is empty" s="Archived and auto-archived wishes live here"/>`}
           ${arch.map(t=>html`
             <div key=${t.id} class="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-2.5 items-center shadow-sm opacity-70">
-              <span style=${{fontSize:20}}>&#x1F4E6;</span>
+              <span style=${{fontSize:20}}>📦</span>
               <div class="flex-1 min-w-0">
                 <p class="text-sm text-stone-500 truncate">${t.text}</p>
                 ${t.autoArchived && html`<p class="text-[10px] text-violet-400">Auto-archived wish</p>`}
               </div>
-              <button onClick=${()=>onRestore(t.id)} class="text-emerald-400 text-lg active:text-emerald-600 mx-1">&#x21A9;</button>
-              <button onClick=${()=>onDel(t.id)} class="text-stone-200 text-xl active:text-red-400">&#xD7;</button>
+              <button onClick=${()=>onRestore(t.id)} class="text-emerald-400 text-lg active:text-emerald-600 mx-1">↩</button>
+              <button onClick=${()=>onDel(t.id)} class="text-stone-200 text-xl active:text-red-400">×</button>
             </div>
           `)}
         </div>
@@ -384,30 +384,30 @@ function SettingsView({cid,setCid,connected,onConnect,onDisconnect,onSync,syncin
   const isHttps=location.protocol==='https:';
   return html`
     <div class="pt-5 pb-24 px-4">
-      <h2 class="text-xl font-black text-stone-800 mb-0.5">&#x2699;&#xFE0F; Setup</h2>
-      <p class="text-xs text-stone-500 mb-4">Google Calendar &#xB7; Labels &#xB7; Stats</p>
+      <h2 class="text-xl font-black text-stone-800 mb-0.5">⚙️ Setup</h2>
+      <p class="text-xs text-stone-500 mb-4">Google Calendar · Labels · Stats</p>
       ${!isHttps && html`
         <div class="bg-amber-50 border border-amber-200 rounded-2xl p-3 mb-4">
-          <p class="text-xs font-bold text-amber-700">&#x26A0;&#xFE0F; HTTPS required for Google Calendar</p>
+          <p class="text-xs font-bold text-amber-700">⚠️ HTTPS required for Google Calendar</p>
           <p class="text-xs text-amber-600 mt-0.5">Deploy to GitHub Pages first. Calendar sync does not work on file:// URLs.</p>
         </div>
       `}
       <div class="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
         <div class="flex items-center gap-2.5 mb-3">
-          <span style=${{fontSize:24}}>&#x1F4C5;</span>
+          <span style=${{fontSize:24}}>📅</span>
           <div>
             <p class="text-sm font-black text-stone-800">Google Calendar Sync</p>
-            <p class=${'text-xs font-semibold '+(connected?'text-emerald-600':'text-stone-400')}>${connected?'&#x2713; Connected &#x2014; tasks sync automatically':'Not connected'}</p>
+            <p class=${'text-xs font-semibold '+(connected?'text-emerald-600':'text-stone-400')}>${connected?'✓ Connected — tasks sync automatically':'Not connected'}</p>
           </div>
         </div>
         ${!connected && html`
           <div>
             <div class="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-3">
-              <p class="text-xs font-bold text-blue-800 mb-1.5">&#x1F4CB; One-time Google Cloud setup:</p>
+              <p class="text-xs font-bold text-blue-800 mb-1.5">📋 One-time Google Cloud setup:</p>
               <div class="text-xs text-blue-700 space-y-1">
                 <p><strong>1.</strong> Open console.cloud.google.com</p>
-                <p><strong>2.</strong> New project &#x2192; enable Google Calendar API</p>
-                <p><strong>3.</strong> Credentials &#x2192; Create OAuth 2.0 Client ID</p>
+                <p><strong>2.</strong> New project → enable Google Calendar API</p>
+                <p><strong>3.</strong> Credentials → Create OAuth 2.0 Client ID</p>
                 <p><strong>4.</strong> Type: Web application</p>
                 <p><strong>5.</strong> Authorized JS origin: your GitHub Pages URL</p>
                 <p><strong>6.</strong> Copy the Client ID and paste below</p>
@@ -417,13 +417,13 @@ function SettingsView({cid,setCid,connected,onConnect,onDisconnect,onSync,syncin
               class="w-full px-3 py-2.5 text-xs border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-300 bg-stone-50 mb-2 text-stone-700"/>
             <button onClick=${()=>setCid(inp.trim())} disabled=${!inp.trim()||!isHttps}
               class="w-full py-2.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-bold active:bg-stone-200 disabled:opacity-40 mb-2">Save Client ID</button>
-            ${cid && isHttps && html`<button onClick=${onConnect} class="w-full py-3 bg-blue-600 text-white rounded-xl text-xs font-black active:bg-blue-700">&#x1F510; Sign in with Google</button>`}
+            ${cid && isHttps && html`<button onClick=${onConnect} class="w-full py-3 bg-blue-600 text-white rounded-xl text-xs font-black active:bg-blue-700">🔐 Sign in with Google</button>`}
           </div>
         `}
         ${connected && html`
           <div>
             <button onClick=${onSync} disabled=${syncing} class="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black active:bg-emerald-700 disabled:opacity-60 mb-2">
-              ${syncing?'&#x23F3; Syncing&#x2026;':'&#x1F504; Sync all dated tasks now'}
+              ${syncing?'⏳ Syncing…':'🔄 Sync all dated tasks now'}
             </button>
             <p class="text-[10px] text-stone-400 text-center mb-3">New tasks with dates auto-sync when saved</p>
             <button onClick=${onDisconnect} class="w-full py-2 bg-stone-50 text-stone-400 rounded-xl text-xs border border-stone-200 active:bg-stone-100">Disconnect</button>
@@ -431,24 +431,24 @@ function SettingsView({cid,setCid,connected,onConnect,onDisconnect,onSync,syncin
         `}
       </div>
       <div class="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
-        <p class="text-sm font-black text-stone-800 mb-3">&#x1F3F7;&#xFE0F; Labels</p>
+        <p class="text-sm font-black text-stone-800 mb-3">🏷️ Labels</p>
         <div class="flex flex-wrap gap-2 mb-3">
           ${labels.map(l=>html`
             <div key=${l} class="flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-full pl-3 pr-1.5 py-1">
               <span class="text-xs font-semibold text-stone-600">${l}</span>
-              <button onClick=${()=>onDelLbl(l)} class="text-stone-300 w-4 h-4 flex items-center justify-center rounded-full active:text-red-400" style=${{fontSize:12}}>&#xD7;</button>
+              <button onClick=${()=>onDelLbl(l)} class="text-stone-300 w-4 h-4 flex items-center justify-center rounded-full active:text-red-400" style=${{fontSize:12}}>×</button>
             </div>
           `)}
         </div>
         <div class="flex gap-2">
           <input value=${newLbl} onInput=${e=>setNewLbl(e.target.value)} onKeyDown=${e=>{if(e.key==='Enter'&&newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}}
-            placeholder="Add a label&#x2026;" class="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+            placeholder="Add a label…" class="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
           <button onClick=${()=>{if(newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}}
             class="px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-black border border-emerald-200 active:bg-emerald-100">Add</button>
         </div>
       </div>
       <div class="bg-white rounded-2xl border border-stone-100 shadow-sm p-4">
-        <p class="text-sm font-black text-stone-800 mb-2">&#x1F4CA; Stats</p>
+        <p class="text-sm font-black text-stone-800 mb-2">📊 Stats</p>
         <p class="text-xs text-stone-500">${taskCount} total items in your system</p>
         <p class="text-xs text-stone-400 mt-0.5">All data stored locally on this device</p>
       </div>
@@ -472,7 +472,7 @@ function EditModal({task,labels,onSave,onClose,onDel,onArch,onAddLbl,gcalOk}){
           <textarea value=${t.text} onInput=${e=>s('text',e.target.value)}
             class="w-full mt-3 p-4 text-sm text-stone-800 bg-stone-50 rounded-2xl border border-stone-200 resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 leading-relaxed" style=${{minHeight:64}}></textarea>
           <${Sec} l="Type">
-            <${Row}>${[['task','&#x2705; Task'],['wish','&#x2728; Wish/Idea']].map(([k,lb])=>html`<${Ch} key=${k} on=${t.type===k} click=${()=>s('type',k)}><span dangerouslySetInnerHTML=${{__html:lb}}></span></${Ch}>`)}</${Row}>
+            <${Row}>${[['task','✅ Task'],['wish','✨ Wish/Idea']].map(([k,lb])=>html`<${Ch} key=${k} on=${t.type===k} click=${()=>s('type',k)}><span dangerouslySetInnerHTML=${{__html:lb}}></span></${Ch}>`)}</${Row}>
           </${Sec}>
           <${Sec} l="Due Date">
             <${Row} wrap=${true}>${qd.map(({l,v})=>html`<${Ch} key=${l} on=${t.dueDate===v&&v!==null} click=${()=>s('dueDate',v)}>${l}</${Ch}>`)}</${Row}>
@@ -501,20 +501,20 @@ function EditModal({task,labels,onSave,onClose,onDel,onArch,onAddLbl,gcalOk}){
               <${Ch} key=${l} on=${(t.labels||[]).includes(l)} click=${()=>{const c=t.labels||[];s('labels',c.includes(l)?c.filter(x=>x!==l):[...c,l])}}>${l}</${Ch}>
             `)}</${Row}>
             <div class="flex gap-2 mt-2.5">
-              <input value=${newLbl} onInput=${e=>setNewLbl(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&addL()} placeholder="New label&#x2026;"
+              <input value=${newLbl} onInput=${e=>setNewLbl(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&addL()} placeholder="New label…"
                 class="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-white text-stone-700"/>
               <button onClick=${addL} class="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black active:bg-emerald-100">Add</button>
             </div>
           </${Sec}>
           ${gcalOk && t.dueDate && html`
             <p class="text-xs text-center mt-3 text-emerald-600">
-              ${t.calendarEventId?'&#x1F4C6; In Google Calendar &#x2014; will update on save':'&#x1F4C6; Will sync to Google Calendar on save'}
+              ${t.calendarEventId?'📆 In Google Calendar — will update on save':'📆 Will sync to Google Calendar on save'}
             </p>
           `}
           <div class="flex gap-2 mt-5">
             <button onClick=${()=>onSave(t)} class="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700">Save</button>
-            <button onClick=${onArch} class="px-4 py-4 bg-stone-100 text-stone-600 rounded-2xl text-lg active:bg-stone-200">&#x1F4E6;</button>
-            <button onClick=${onDel} class="px-4 py-4 bg-red-50 text-red-500 rounded-2xl text-lg active:bg-red-100">&#x1F5D1;&#xFE0F;</button>
+            <button onClick=${onArch} class="px-4 py-4 bg-stone-100 text-stone-600 rounded-2xl text-lg active:bg-stone-200">📦</button>
+            <button onClick=${onDel} class="px-4 py-4 bg-red-50 text-red-500 rounded-2xl text-lg active:bg-red-100">🗑️</button>
           </div>
         </div>
       </div>
@@ -523,7 +523,7 @@ function EditModal({task,labels,onSave,onClose,onDel,onArch,onAddLbl,gcalOk}){
 }
 
 /* ── Helpers ────────────────────────────────────────────────── */
-function Empty({i,t,s}){return html`<div class="text-center py-20 px-8"><div style=${{fontSize:48}} class="mb-3" dangerouslySetInnerHTML=${{__html:i}}></div><p class="text-sm text-stone-500 font-bold" dangerouslySetInnerHTML=${{__html:t}}></p>${s&&html`<p class="text-xs text-stone-400 mt-1">${s}</p>`}</div>`}
+function Empty({i,t,s}){return html`<div class="text-center py-20 px-8"><div style=${{fontSize:48}} class="mb-3">${i}</div><p class="text-sm text-stone-500 font-bold">${t}</p>${s&&html`<p class="text-xs text-stone-400 mt-1">${s}</p>`}</div>`}
 function Sec({l,children}){return html`<div class="mt-5"><p class="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">${l}</p>${children}</div>`}
 function Row({children,wrap}){return html`<div class=${'flex gap-2'+(wrap?' flex-wrap':'')}>${children}</div>`}
 function Ch({on,click,children}){return html`<button onClick=${click} class=${'px-3.5 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}>${children}</button>`}
