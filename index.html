@@ -9,48 +9,49 @@
   <meta name="apple-mobile-web-app-title" content="Brain Dump"/>
   <meta name="theme-color" content="#16a34a"/>
   <link rel="manifest" href="manifest.json"/>
-  <link rel="icon" href="icon.svg"/>
-  <link rel="stylesheet" href="styles.css"/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    html,body{height:100%;overflow:hidden;overscroll-behavior:none;margin:0;padding:0;background:#fafaf9;font-family:system-ui,-apple-system,sans-serif}
-    #root{height:100%;display:flex;flex-direction:column}
-    ::-webkit-scrollbar{display:none}
+    html,body{height:100%;margin:0;padding:0;background:#fafaf9;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}
     input,textarea,button{font-family:inherit}
+    ::-webkit-scrollbar{display:none}
   </style>
 </head>
 <body>
-<div id="root">
-  <div style="height:100%;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:#a8a29e">
-    <span style="font-size:56px">🧠</span>
-    <span style="font-size:14px;font-weight:600">Loading&hellip;</span>
-  </div>
-</div>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useCallback}=React;
 
-<script type="module">
-import { h, render, Fragment } from 'https://esm.sh/preact@10';
-import { useState, useEffect } from 'https://esm.sh/preact@10/hooks';
-import htm from 'https://esm.sh/htm@3';
-const html = htm.bind(h);
-
-/* ── Utils ─────────────────────────────────────────────────── */
+/* ── Utils ─────────────────────────────────────────── */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const todayISO=()=>new Date().toISOString().slice(0,10);
 const addDays=n=>{const d=new Date();d.setDate(d.getDate()+n);return d.toISOString().slice(0,10)};
+const nextRecur=(d,r)=>{const dt=new Date(d+'T00:00:00');if(r==='daily')dt.setDate(dt.getDate()+1);else if(r==='weekly')dt.setDate(dt.getDate()+7);else if(r==='monthly')dt.setMonth(dt.getMonth()+1);else if(r==='yearly')dt.setFullYear(dt.getFullYear()+1);return dt.toISOString().slice(0,10)};
 const fmtDate=d=>{if(!d)return'';if(d===todayISO())return'Today';if(d===addDays(1))return'Tomorrow';return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
+const fmtCreated=d=>{if(!d)return'';return new Date(d).toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
 const isOverdue=d=>!!d&&d<todayISO();
 const withinN=(d,n)=>{if(!d)return false;const s=new Date(todayISO()+'T00:00:00'),e=new Date(s);e.setDate(e.getDate()+n);const dt=new Date(d+'T00:00:00');return dt>=s&&dt<=e};
-const store={get:(k,d=null)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+const ls={get:(k,d=null)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
 
-/* ── Google Calendar ────────────────────────────────────────── */
+/* ── Google/Drive/Calendar ─────────────────────────── */
 const GCAL='https://www.googleapis.com/calendar/v3';
-let _tc=null,_tok=null;
+const DAPI='https://www.googleapis.com/drive/v3';
+const DFILE='gtd_v2.json';
+let _tc=null,_tok=null,_fid=null;
+
 const gcal={
   init(cid,onOk){
     if(!window.google?.accounts?.oauth2)return false;
-    _tc=window.google.accounts.oauth2.initTokenClient({client_id:cid,scope:'https://www.googleapis.com/auth/calendar.events',callback:r=>{if(r.access_token){_tok=r.access_token;store.set('gcal_tok',_tok);onOk()}}});
-    const saved=store.get('gcal_tok');if(saved){_tok=saved;onOk()}
+    _tc=window.google.accounts.oauth2.initTokenClient({
+      client_id:cid,
+      scope:'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata',
+      callback:r=>{if(r.access_token){_tok=r.access_token;ls.set('tok',_tok);onOk()}}
+    });
+    const s=ls.get('tok');if(s){_tok=s;onOk()}
     return true;
   },
   connect(){_tc&&_tc.requestAccessToken({prompt:''})},
@@ -58,75 +59,145 @@ const gcal={
   async create(task){
     if(!_tok||!task.dueDate)return null;
     try{
-      const r=await fetch(GCAL+'/calendars/primary/events',{method:'POST',headers:gcal._h(),body:JSON.stringify({summary:task.text,start:{date:task.dueDate},end:{date:task.dueDate},description:[task.priority&&('Priority: '+task.priority),(task.labels?.length)&&('Labels: '+task.labels.join(', ')),task.eisenhower&&('Matrix: '+task.eisenhower)].filter(Boolean).join('\n')})});
-      if(r.status===401){_tok=null;store.set('gcal_tok',null);return null}
+      const r=await fetch(GCAL+'/calendars/primary/events',{method:'POST',headers:gcal._h(),body:JSON.stringify({summary:task.text,start:{date:task.dueDate},end:{date:task.dueDate},description:[task.priority&&('P: '+task.priority),(task.labels&&task.labels.length)&&('Labels: '+task.labels.join(', ')),task.project&&('Project: '+task.project),task.recurring&&('Recurring: '+task.recurring)].filter(Boolean).join('\n')})});
+      if(r.status===401){_tok=null;ls.set('tok',null);return null}
       return(await r.json()).id||null;
     }catch{return null}
   },
-  async update(task){
-    if(!_tok||!task.calendarEventId)return;
-    try{const r=await fetch(GCAL+'/calendars/primary/events/'+task.calendarEventId,{method:'PATCH',headers:gcal._h(),body:JSON.stringify({summary:task.status==='completed'?('\u2705 '+task.text):task.text,start:{date:task.dueDate},end:{date:task.dueDate}})});if(r.status===401){_tok=null;store.set('gcal_tok',null)}}catch{}
-  },
-  async del(eid){if(!_tok||!eid)return;try{await fetch(GCAL+'/calendars/primary/events/'+eid,{method:'DELETE',headers:gcal._h()})}catch{}}
+  async del(eid){if(!_tok||!eid)return;try{const r=await fetch(GCAL+'/calendars/primary/events/'+eid,{method:'DELETE',headers:gcal._h()});if(r.status===401){_tok=null;ls.set('tok',null)}}catch{}}
 };
 
-/* ── Constants ──────────────────────────────────────────────── */
+const drv={
+  async _fid(){
+    if(_fid)return _fid;
+    try{const r=await fetch(DAPI+'/files?spaces=appDataFolder&q=name%3D%27'+DFILE+'%27&fields=files(id)',{headers:gcal._h()});if(!r.ok){if(r.status===401)_tok=null;return null}const d=await r.json();_fid=d.files&&d.files[0]&&d.files[0].id||null;return _fid}catch{return null}
+  },
+  async save(data){
+    if(!_tok)return;
+    try{
+      const fid=await drv._fid();
+      const content=JSON.stringify({...data,_ts:Date.now()});
+      const bnd='gtd_bnd_42';
+      const meta=fid?'{}':JSON.stringify({name:DFILE,parents:['appDataFolder']});
+      const body='--'+bnd+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+meta+'\r\n--'+bnd+'\r\nContent-Type: application/json\r\n\r\n'+content+'\r\n--'+bnd+'--';
+      const url='https://www.googleapis.com/upload/drive/v3/files'+(fid?'/'+fid:'')+'?uploadType=multipart';
+      const r=await fetch(url,{method:fid?'PATCH':'POST',headers:{'Authorization':'Bearer '+_tok,'Content-Type':'multipart/related; boundary='+bnd},body});
+      if(r.ok){const d=await r.json();_fid=d.id||_fid}
+    }catch{}
+  },
+  async load(){
+    if(!_tok)return null;
+    try{const fid=await drv._fid();if(!fid)return null;const r=await fetch(DAPI+'/files/'+fid+'?alt=media',{headers:gcal._h()});if(!r.ok)return null;return await r.json()}catch{return null}
+  }
+};
+
+/* ── Style maps ────────────────────────────────────── */
 const PS={P1:'bg-red-50 text-red-600 border-red-200',P2:'bg-orange-50 text-orange-600 border-orange-200',P3:'bg-sky-50 text-sky-700 border-sky-200',P4:'bg-stone-100 text-stone-400 border-stone-200'};
-const PF={P1:'\uD83D\uDD34',P2:'\uD83D\uDFE0',P3:'\uD83D\uDD35',P4:'\u26AA'};
+const PF={P1:'🔴',P2:'🟠',P3:'🔵',P4:'⚪'};
 const EIS=[
   {k:'do',s:'Do Now',l:'Urgent + Important',b:'border-red-300 bg-red-50',c:'bg-red-50 text-red-700 border-red-200'},
   {k:'schedule',s:'Schedule',l:'Important, Not Urgent',b:'border-sky-300 bg-sky-50',c:'bg-sky-50 text-sky-700 border-sky-200'},
   {k:'delegate',s:'Delegate',l:'Urgent, Not Important',b:'border-amber-300 bg-amber-50',c:'bg-amber-50 text-amber-700 border-amber-200'},
   {k:'drop',s:'Drop',l:'Not Urgent, Not Important',b:'border-stone-300 bg-stone-50',c:'bg-stone-100 text-stone-500 border-stone-200'},
 ];
+const RECUR_LABELS={daily:'📆 Daily',weekly:'📅 Weekly',monthly:'🗓 Monthly',yearly:'🔁 Yearly'};
 
-/* ── App ────────────────────────────────────────────────────── */
+/* ── App ───────────────────────────────────────────── */
 function App(){
-  const [tasks,setTasks]=useState(()=>store.get('tasks',[]));
-  const [labels,setLabels]=useState(()=>store.get('labels',['Personal','Work','Health','Finance']));
+  const [tasks,setTasks]=useState(()=>ls.get('tasks',[]));
+  const [labels,setLabels]=useState(()=>ls.get('labels',['Personal','Work','Health','Finance']));
+  const [projects,setProjects]=useState(()=>ls.get('projects',['Home','Office','Family']));
   const [tab,setTab]=useState('inbox');
   const [doneTab,setDoneTab]=useState('completed');
   const [editTask,setEditTask]=useState(null);
   const [dump,setDump]=useState('');
-  const [lf,setLf]=useState(null);
-  const [gcalCid,setGcalCid]=useState(()=>store.get('gcal_cid',''));
+  const [dumpProject,setDumpProject]=useState(null);
+  const [dumpLabel,setDumpLabel]=useState(null);
+  const [lf,setLf]=useState(null); // 'p:Project' or 'l:Label'
+  const [gcalCid,setGcalCid]=useState(()=>ls.get('gcal_cid',''));
   const [gcalOk,setGcalOk]=useState(false);
   const [syncing,setSyncing]=useState(false);
+  const [driveSync,setDriveSync]=useState(false);
   const [toast,setToast]=useState('');
+  const [selectMode,setSelectMode]=useState(false);
+  const [selected,setSelected]=useState([]);
   const [ready,setReady]=useState(false);
 
   useEffect(()=>{
     const co=new Date();co.setDate(co.getDate()-7);
-    const t=store.get('tasks',[]).map(t=>{if(t.type==='wish'&&t.status==='inbox'&&new Date(t.createdAt)<co)return{...t,status:'archived',autoArchived:true};return t});
-    store.set('tasks',t);setTasks(t);setReady(true);
+    const t=ls.get('tasks',[]).map(t=>{if(t.type==='wish'&&t.status==='inbox'&&new Date(t.createdAt)<co)return{...t,status:'archived',autoArchived:true};return t});
+    ls.set('tasks',t);setTasks(t);setReady(true);
   },[]);
 
   useEffect(()=>{
     if(!gcalCid)return;
-    const tryInit=()=>{const ok=gcal.init(gcalCid,()=>setGcalOk(true));if(!ok)setTimeout(tryInit,500)};
-    if(window.google?.accounts?.oauth2)tryInit();
-    else{const id=setInterval(()=>{if(window.google?.accounts?.oauth2){clearInterval(id);tryInit()}},400);return()=>clearInterval(id)}
+    const tryInit=()=>{const ok=gcal.init(gcalCid,()=>{setGcalOk(true)});if(!ok)setTimeout(tryInit,500)};
+    if(window.google&&window.google.accounts&&window.google.accounts.oauth2)tryInit();
+    else{const id=setInterval(()=>{if(window.google&&window.google.accounts&&window.google.accounts.oauth2){clearInterval(id);tryInit()}},400);return()=>clearInterval(id)}
   },[gcalCid]);
 
+  // Load from Drive when first connected
+  useEffect(()=>{
+    if(!gcalOk)return;
+    const syncFromDrive=async()=>{
+      setDriveSync(true);
+      const data=await drv.load();
+      setDriveSync(false);
+      if(!data)return;
+      const localTs=ls.get('tasks_ts',0);
+      if(data._ts&&data._ts>localTs){
+        if(data.tasks){setTasks(data.tasks);ls.set('tasks',data.tasks);ls.set('tasks_ts',data._ts)}
+        if(data.labels){setLabels(data.labels);ls.set('labels',data.labels)}
+        if(data.projects){setProjects(data.projects);ls.set('projects',data.projects)}
+        showToast('📥 Synced from Google Drive');
+      }
+    };
+    syncFromDrive();
+  },[gcalOk]);
+
   const showToast=(msg,ms=3000)=>{setToast(msg);setTimeout(()=>setToast(''),ms)};
-  const saveTasks=t=>{setTasks(t);store.set('tasks',t)};
-  const saveLbls=l=>{setLabels(l);store.set('labels',l)};
+
+  const persist=useCallback((t,lbl=null,prj=null)=>{
+    const finalLbls=lbl!==null?lbl:labels;
+    const finalPrjs=prj!==null?prj:projects;
+    setTasks(t);ls.set('tasks',t);
+    const ts=Date.now();ls.set('tasks_ts',ts);
+    if(gcalOk)drv.save({tasks:t,labels:finalLbls,projects:finalPrjs,_ts:ts}).catch(()=>{});
+  },[gcalOk,labels,projects]);
+
+  const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk)drv.save({tasks,labels:l,projects}).catch(()=>{})};
+  const persistPrjs=p=>{setProjects(p);ls.set('projects',p);if(gcalOk)drv.save({tasks,labels,projects:p}).catch(()=>{})};
 
   const addDump=()=>{
     const lines=dump.split('\n').map(s=>s.trim()).filter(Boolean);if(!lines.length)return;
-    saveTasks([...tasks,...lines.map(text=>({id:uid(),text,createdAt:new Date().toISOString(),dueDate:null,labels:[],priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null}))]);
-    setDump('');setTab('inbox');
+    const nt=lines.map(text=>({id:uid(),text,createdAt:new Date().toISOString(),dueDate:null,labels:dumpLabel?[dumpLabel]:[],project:dumpProject||null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null}));
+    persist([...tasks,...nt]);setDump('');setDumpProject(null);setDumpLabel(null);setTab('inbox');
   };
+
   const complete=async id=>{
     const task=tasks.find(t=>t.id===id);if(!task)return;
     const upd={...task,status:'completed',completedAt:new Date().toISOString()};
-    saveTasks(tasks.map(t=>t.id===id?upd:t));
-    if(gcalOk&&upd.calendarEventId)gcal.update(upd);
+    let newTasks=tasks.map(t=>t.id===id?upd:t);
+    // Delete calendar event on complete
+    if(gcalOk&&upd.calendarEventId)gcal.del(upd.calendarEventId);
+    // If recurring, create next occurrence
+    if(task.recurring&&task.dueDate){
+      const next={...task,id:uid(),dueDate:nextRecur(task.dueDate,task.recurring),status:'todo',completedAt:null,calendarEventId:null,createdAt:new Date().toISOString()};
+      newTasks=[...newTasks,next];
+      if(gcalOk){const cid=await gcal.create(next);if(cid)newTasks=newTasks.map(t=>t.id===next.id?{...t,calendarEventId:cid}:t)}
+    }
+    persist(newTasks);
   };
-  const uncomplete=id=>saveTasks(tasks.map(t=>t.id===id?{...t,status:t.dueDate?'todo':'inbox',completedAt:null}:t));
-  const archive=id=>saveTasks(tasks.map(t=>t.id===id?{...t,status:'archived'}:t));
-  const restore=id=>saveTasks(tasks.map(t=>t.id===id?{...t,status:'inbox'}:t));
-  const del=async id=>{const task=tasks.find(t=>t.id===id);if(gcalOk&&task?.calendarEventId)gcal.del(task.calendarEventId);saveTasks(tasks.filter(t=>t.id!==id))};
+
+  const uncomplete=id=>persist(tasks.map(t=>t.id===id?{...t,status:t.dueDate?'todo':'inbox',completedAt:null}:t));
+  const archive=id=>persist(tasks.map(t=>t.id===id?{...t,status:'archived'}:t));
+  const restore=id=>persist(tasks.map(t=>t.id===id?{...t,status:'inbox'}:t));
+  const del=async id=>{
+    const task=tasks.find(t=>t.id===id);
+    if(gcalOk&&task&&task.calendarEventId)gcal.del(task.calendarEventId);
+    persist(tasks.filter(t=>t.id!==id));
+  };
+
   const saveEdit=async upd=>{
     let s=upd.status;
     if(upd.dueDate&&s==='inbox')s='todo';
@@ -134,407 +205,453 @@ function App(){
     const old=tasks.find(t=>t.id===upd.id);
     let ceid=upd.calendarEventId;
     if(gcalOk){
-      if(upd.dueDate){if(!ceid){ceid=await gcal.create({...upd,status:s})}else if(old?.dueDate!==upd.dueDate||old?.text!==upd.text){gcal.update({...upd,calendarEventId:ceid})}}
-      else if(ceid){gcal.del(ceid);ceid=null}
+      if(upd.dueDate){
+        if(!ceid){ceid=await gcal.create({...upd,status:s})}
+        else if((old&&old.dueDate)!==upd.dueDate||(old&&old.text)!==upd.text){
+          // Delete old and create new (to handle date changes)
+          gcal.del(ceid);ceid=await gcal.create({...upd,status:s});
+        }
+      }else if(ceid){gcal.del(ceid);ceid=null}
     }
-    saveTasks(tasks.map(t=>t.id===upd.id?{...upd,status:s,calendarEventId:ceid}:t));setEditTask(null);
+    persist(tasks.map(t=>t.id===upd.id?{...upd,status:s,calendarEventId:ceid}:t));
+    setEditTask(null);
   };
+
   const syncAll=async()=>{
     setSyncing(true);
     const dated=tasks.filter(t=>t.dueDate&&t.status!=='archived'&&!t.calendarEventId);
     let upd=[...tasks];let cnt=0;
     for(const t of dated){const id=await gcal.create(t);if(id){upd=upd.map(u=>u.id===t.id?{...u,calendarEventId:id}:u);cnt++}}
-    saveTasks(upd);setSyncing(false);showToast('\u2705 Synced '+cnt+' task'+(cnt!==1?'s':'')+' to Google Calendar');
+    persist(upd);setSyncing(false);showToast('✅ Synced '+cnt+' tasks to Calendar');
   };
 
-  if(!ready)return null;
-  const af=list=>lf?list.filter(t=>(t.labels||[]).includes(lf)):list;
-  const inbox=af(tasks.filter(t=>t.status==='inbox'));
-  const todos=af(tasks.filter(t=>t.status==='todo')).sort((a,b)=>(a.dueDate||'').localeCompare(b.dueDate||''));
+  const copySelected=()=>{
+    const texts=selected.map(id=>tasks.find(t=>t.id===id)).filter(Boolean).map(t=>'• '+t.text);
+    navigator.clipboard&&navigator.clipboard.writeText(texts.join('\n')).then(()=>showToast('📋 Copied '+texts.length+' tasks')).catch(()=>showToast('❌ Copy failed'));
+    setSelectMode(false);setSelected([]);
+  };
+
+  const toggleSelect=id=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+
+  if(!ready)return<div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:'#a8a29e'}}><span style={{fontSize:56}}>🧠</span><span style={{fontSize:14,fontWeight:600}}>Loading…</span></div>;
+
+  // Filter logic
+  const matchFilter=t=>{if(!lf)return true;if(lf.startsWith('p:'))return t.project===lf.slice(2);if(lf.startsWith('l:'))return(t.labels||[]).includes(lf.slice(2));return true};
+  const isProcessed=t=>(t.labels&&t.labels.length>0)||!!t.project;
+
+  // Inbox: unfiltered = unprocessed only; filtered = matching
+  const inbox=lf?tasks.filter(t=>t.status==='inbox'&&matchFilter(t)):tasks.filter(t=>t.status==='inbox'&&!isProcessed(t));
+  // Sort newest first
+  const inboxSorted=[...inbox].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  const todos=tasks.filter(t=>t.status==='todo'&&matchFilter(t)).sort((a,b)=>(a.dueDate||'').localeCompare(b.dueDate||''));
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const arch=tasks.filter(t=>t.status==='archived');
-  const active=af([...tasks.filter(t=>t.status==='inbox'),...tasks.filter(t=>t.status==='todo')]);
-  const showLf=['inbox','todo','matrix'].includes(tab);
-  const inboxN=tasks.filter(t=>t.status==='inbox').length;
+  const active=tasks.filter(t=>['inbox','todo'].includes(t.status)&&matchFilter(t));
+  const unprocessedN=tasks.filter(t=>t.status==='inbox'&&!isProcessed(t)).length;
   const todoN=tasks.filter(t=>t.status==='todo').length;
+  const showLf=['inbox','todo','matrix'].includes(tab);
 
-  return html`
-    <div class="flex flex-col bg-stone-50" style=${{height:'100%'}}>
-      ${toast && html`<div class="fixed top-4 left-4 right-4 z-50 bg-emerald-600 text-white text-sm font-bold px-4 py-3 rounded-2xl text-center shadow-xl">${toast}</div>`}
-
-      ${showLf && labels.length>0 && html`
-        <div class="bg-white border-b border-stone-100 px-3 py-2 flex gap-1.5 overflow-x-auto flex-shrink-0" style=${{scrollbarWidth:'none'}}>
-          ${['All',...labels].map(l=>{const on=l==='All'?!lf:lf===l;return html`
-            <button key=${l} onClick=${()=>setLf(l==='All'?null:(lf===l?null:l))}
-              class=${'px-3 py-1 rounded-full text-xs font-bold flex-shrink-0 border '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-stone-50 text-stone-500 border-stone-200')}>${l}</button>
-          `})}
+  return(
+    <div style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',background:'#fafaf9'}}>
+      {toast&&<div className="fixed top-4 left-4 right-4 z-50 bg-emerald-600 text-white text-sm font-bold px-4 py-3 rounded-2xl text-center shadow-xl">{toast}</div>}
+      {selectMode&&selected.length>0&&(
+        <div className="fixed z-40 flex gap-2" style={{bottom:72,right:16}}>
+          <button onClick={copySelected} className="bg-emerald-600 text-white px-4 py-3 rounded-2xl font-black text-sm shadow-xl active:bg-emerald-700">
+            📋 Copy {selected.length}
+          </button>
         </div>
-      `}
+      )}
 
-      <div class="flex-1 overflow-y-auto">
-        ${tab==='dump'    && html`<${DumpView} text=${dump} setText=${setDump} onAdd=${addDump} total=${tasks.length}/>`}
-        ${tab==='inbox'   && html`<${InboxView} tasks=${inbox} onComplete=${complete} onEdit=${setEditTask}/>`}
-        ${tab==='todo'    && html`<${TodoView} tasks=${todos} onComplete=${complete} onEdit=${setEditTask}/>`}
-        ${tab==='matrix'  && html`<${MatrixView} tasks=${active} onEdit=${setEditTask} onComplete=${complete}/>`}
-        ${tab==='done'    && html`<${DoneView} done=${done} arch=${arch} sub=${doneTab} setSub=${setDoneTab} onUndo=${uncomplete} onRestore=${restore} onDel=${del}/>`}
-        ${tab==='settings'&& html`<${SettingsView} cid=${gcalCid} setCid=${v=>{setGcalCid(v);store.set('gcal_cid',v)}} connected=${gcalOk} onConnect=${()=>gcal.connect()} onDisconnect=${()=>{setGcalOk(false);_tok=null;store.set('gcal_tok',null)}} onSync=${syncAll} syncing=${syncing} labels=${labels} onAddLbl=${l=>saveLbls([...labels,l])} onDelLbl=${l=>saveLbls(labels.filter(x=>x!==l))} taskCount=${tasks.length}/>`}
+      {/* Filter bar */}
+      {showLf&&(projects.length+labels.length>0)&&(
+        <div className="bg-white border-b border-stone-100 px-3 py-2 flex gap-1.5 overflow-x-auto flex-shrink-0" style={{scrollbarWidth:'none'}}>
+          <Fchip on={!lf} click={()=>{setLf(null);setSelectMode(false);setSelected([])}}>All</Fchip>
+          {projects.map(p=><Fchip key={'p:'+p} on={lf==='p:'+p} click={()=>setLf(lf==='p:'+p?null:'p:'+p)}>📁 {p}</Fchip>)}
+          {labels.map(l=><Fchip key={'l:'+l} on={lf==='l:'+l} click={()=>setLf(lf==='l:'+l?null:'l:'+l)}># {l}</Fchip>)}
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto" style={{paddingBottom:4}}>
+        {/* Select mode toggle for inbox/todo */}
+        {['inbox','todo'].includes(tab)&&(
+          <div className="flex justify-between items-center px-4 pt-4 pb-1">
+            <div>
+              <h2 className="text-xl font-black text-stone-800">{tab==='inbox'?'📥 Inbox':'☑️ To-Do'}</h2>
+              <p className="text-xs text-stone-500 mt-0.5">{tab==='inbox'?'Tap to triage — newest first':'Scheduled tasks by date'}</p>
+            </div>
+            <button onClick={()=>{setSelectMode(!selectMode);setSelected([])}} className={'text-xs font-bold px-3 py-1.5 rounded-xl border '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>
+              {selectMode?'✕ Cancel':'Select'}
+            </button>
+          </div>
+        )}
+
+        {tab==='dump'    &&<DumpView text={dump} setText={setDump} onAdd={addDump} total={tasks.length} labels={labels} projects={projects} dumpProject={dumpProject} setDumpProject={setDumpProject} dumpLabel={dumpLabel} setDumpLabel={setDumpLabel}/>}
+        {tab==='inbox'   &&<InboxBody tasks={inboxSorted} onComplete={complete} onEdit={setEditTask} selectMode={selectMode} selected={selected} onSelect={toggleSelect}/>}
+        {tab==='todo'    &&<TodoBody tasks={todos} onComplete={complete} onEdit={setEditTask} selectMode={selectMode} selected={selected} onSelect={toggleSelect}/>}
+        {tab==='matrix'  &&<MatrixView tasks={active} onEdit={setEditTask} onComplete={complete}/>}
+        {tab==='done'    &&<DoneView done={done} arch={arch} sub={doneTab} setSub={setDoneTab} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
+        {tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveSync={driveSync} onConnect={()=>gcal.connect()} onDisconnect={()=>{setGcalOk(false);_tok=null;_fid=null;ls.set('tok',null)}} onSync={syncAll} syncing={syncing} labels={labels} onAddLbl={l=>persistLbls([...labels,l])} onDelLbl={l=>persistLbls(labels.filter(x=>x!==l))} projects={projects} onAddPrj={p=>persistPrjs([...projects,p])} onDelPrj={p=>persistPrjs(projects.filter(x=>x!==p))} taskCount={tasks.length}/>}
       </div>
 
-      <nav class="bg-white border-t border-stone-100 flex justify-around items-center py-2 px-1 flex-shrink-0">
-        ${[{k:'dump',e:'\uD83E\uDDE0',l:'Dump'},{k:'inbox',e:'\uD83D\uDCE5',l:'Inbox',n:inboxN},{k:'todo',e:'\u2611\uFE0F',l:'Todo',n:todoN},{k:'matrix',e:'\uD83C\uDFAF',l:'Matrix'},{k:'done',e:'\u2705',l:'Done'},{k:'settings',e:'\u2699\uFE0F',l:'Setup'}].map(({k,e,l,n})=>html`
-          <button key=${k} onClick=${()=>setTab(k)} class=${'relative flex flex-col items-center gap-0.5 px-1.5 py-1 rounded-xl '+(tab===k?'text-emerald-600':'text-stone-400')}>
-            <span style=${{fontSize:20,lineHeight:1}}>${e}</span>
-            <span style=${{fontSize:9,fontWeight:700}}>${l}</span>
-            ${n>0 && html`<span class="absolute -top-0.5 right-0 bg-emerald-500 text-white font-bold rounded-full flex items-center justify-center" style=${{fontSize:8,minWidth:13,height:13,padding:'0 2px'}}>${n>99?'99+':n}</span>`}
+      {/* Bottom nav — always visible */}
+      <nav className="bg-white border-t border-stone-100 flex justify-around items-center px-1 flex-shrink-0" style={{paddingTop:8,paddingBottom:10}}>
+        {[{k:'dump',e:'🧠',l:'Dump'},{k:'inbox',e:'📥',l:'Inbox',n:unprocessedN},{k:'todo',e:'☑️',l:'Todo',n:todoN},{k:'matrix',e:'🎯',l:'Matrix'},{k:'done',e:'✅',l:'Done'},{k:'settings',e:'⚙️',l:'Setup'}].map(({k,e,l,n})=>(
+          <button key={k} onClick={()=>{setTab(k);setSelectMode(false);setSelected([])}} className={'relative flex flex-col items-center gap-0.5 px-1.5 py-0.5 rounded-xl '+(tab===k?'text-emerald-600':'text-stone-400')}>
+            <span style={{fontSize:20,lineHeight:1}}>{e}</span>
+            <span style={{fontSize:9,fontWeight:700}}>{l}</span>
+            {n>0&&<span className="absolute bg-emerald-500 text-white font-bold rounded-full flex items-center justify-center" style={{fontSize:8,minWidth:13,height:13,padding:'0 2px',top:-2,right:-2}}>{n>99?'99+':n}</span>}
           </button>
-        `)}
+        ))}
       </nav>
 
-      ${editTask && html`<${EditModal} task=${editTask} labels=${labels} gcalOk=${gcalOk} onSave=${saveEdit} onClose=${()=>setEditTask(null)} onDel=${()=>{del(editTask.id);setEditTask(null)}} onArch=${()=>{archive(editTask.id);setEditTask(null)}} onAddLbl=${l=>saveLbls([...labels,l])}/>`}
+      {editTask&&<EditModal task={editTask} labels={labels} projects={projects} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} gcalOk={gcalOk}/>}
     </div>
-  `;
+  );
 }
 
-/* ── DumpView ───────────────────────────────────────────────── */
-function DumpView({text,setText,onAdd,total}){
+/* ── Dump View ─────────────────────────────────────── */
+function DumpView({text,setText,onAdd,total,labels,projects,dumpProject,setDumpProject,dumpLabel,setDumpLabel}){
   const n=text.split('\n').filter(l=>l.trim()).length;
-  return html`
-    <div class="p-5 pt-8 flex flex-col gap-4">
-      <div class="text-center">
-        <div style=${{fontSize:56}} class="mb-2">🧠</div>
-        <h2 class="text-2xl font-black text-stone-800">Brain Dump</h2>
-        <p class="text-sm text-stone-500 mt-1">One thought per line. No judgment.</p>
+  return(
+    <div className="p-5 pt-6 flex flex-col gap-4">
+      <div className="text-center">
+        <div style={{fontSize:48}} className="mb-1">🧠</div>
+        <h2 className="text-2xl font-black text-stone-800">Brain Dump</h2>
+        <p className="text-sm text-stone-500 mt-0.5">One thought per line. No judgment.</p>
       </div>
-      <textarea value=${text} onInput=${e=>setText(e.target.value)}
-        placeholder="bike repair&#10;EV car exchange&#10;new supervisor&#10;safety concern&#10;..."
-        class="w-full h-52 p-4 rounded-2xl border border-stone-200 bg-white text-stone-800 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 shadow-sm leading-relaxed"></textarea>
-      <button onClick=${onAdd} disabled=${!n} class="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700 disabled:opacity-40">
-        ${n>0?('\u2795 Add '+n+' item'+(n!==1?'s':'')+' to Inbox'):'Type something above\u2026'}
+      <div>
+        <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Quick Assign (optional)</p>
+        <div className="flex flex-wrap gap-1.5">
+          {projects.map(p=><button key={p} onClick={()=>setDumpProject(dumpProject===p?null:p)} className={'px-3 py-1.5 rounded-xl text-xs font-bold border '+(dumpProject===p?'bg-indigo-600 text-white border-indigo-600':'bg-white text-stone-600 border-stone-200')}>📁 {p}</button>)}
+          {labels.map(l=><button key={l} onClick={()=>setDumpLabel(dumpLabel===l?null:l)} className={'px-3 py-1.5 rounded-xl text-xs font-bold border '+(dumpLabel===l?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}># {l}</button>)}
+        </div>
+      </div>
+      <textarea value={text} onChange={e=>setText(e.target.value)} autoFocus placeholder={"bike repair\nEV car exchange\nnew supervisor\n..."} className="w-full h-44 p-4 rounded-2xl border border-stone-200 bg-white text-stone-800 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 shadow-sm leading-relaxed"/>
+      <button onClick={onAdd} disabled={!n} className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700 disabled:opacity-40">
+        {n>0?('➕ Add '+n+' item'+(n!==1?'s':'')+' to Inbox'):'Type something above…'}
       </button>
-      ${total>0 && html`<p class="text-center text-xs text-stone-400">${total} items in your system</p>`}
+      {(dumpProject||dumpLabel)&&<p className="text-center text-xs text-stone-500">Will assign: {[dumpProject&&('📁 '+dumpProject),dumpLabel&&('# '+dumpLabel)].filter(Boolean).join(' + ')}</p>}
+      {total>0&&<p className="text-center text-xs text-stone-400">{total} items in your system</p>}
     </div>
-  `;
+  );
 }
 
-/* ── Card ───────────────────────────────────────────────────── */
-function Card({task,onComplete,onEdit}){
+/* ── Task Card ─────────────────────────────────────── */
+function Card({task,onComplete,onEdit,selectMode,isSelected,onSelect}){
   const done=task.status==='completed',over=isOverdue(task.dueDate);
   const q=EIS.find(e=>e.k===task.eisenhower);
-  return html`
-    <div onClick=${()=>!done&&onEdit(task)} class=${'bg-white rounded-2xl border mx-4 mb-2.5 px-4 py-3.5 flex gap-3 items-start shadow-sm '+(over&&!done?'border-red-200':'border-stone-100')}>
-      <button onClick=${ev=>{ev.stopPropagation();onComplete(task.id)}} class=${'mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center '+(done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
-        ${done && html`<span style=${{color:'white',fontWeight:900,fontSize:9}}>✓</span>`}
-      </button>
-      <div class="flex-1 min-w-0">
-        <p class=${'text-sm leading-snug '+(done?'line-through text-stone-400':'text-stone-800')}>${task.text}</p>
-        <div class="flex flex-wrap gap-1 mt-1.5">
-          ${task.dueDate && html`<span class=${'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+(over&&!done?'bg-red-50 text-red-500 border-red-200':'bg-emerald-50 text-emerald-700 border-emerald-100')}>📅 ${fmtDate(task.dueDate)}</span>`}
-          ${task.calendarEventId && html`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-500 border border-blue-100">📆 Cal</span>`}
-          ${task.priority && html`<span class=${'text-[10px] px-1.5 py-0.5 rounded-full font-bold border '+PS[task.priority]}>${PF[task.priority]} ${task.priority}</span>`}
-          ${q && html`<span class=${'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+q.c}>${q.s}</span>`}
-          ${task.type==='wish' && html`<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-100">✨ Wish</span>`}
-          ${(task.labels||[]).map(l=>html`<span key=${l} class="text-[10px] px-1.5 py-0.5 rounded-full bg-stone-100 text-stone-500 border border-stone-200">${l}</span>`)}
+  const handleClick=()=>{if(selectMode)onSelect&&onSelect(task.id);else if(!done)onEdit(task)};
+  return(
+    <div onClick={handleClick} className={'bg-white rounded-2xl border mx-4 mb-2.5 px-4 py-3.5 flex gap-3 items-start shadow-sm active:opacity-80 '+(over&&!done?'border-red-200':isSelected?'border-emerald-400 bg-emerald-50':'border-stone-100')}>
+      {selectMode?(
+        <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+          {isSelected&&<span style={{color:'white',fontWeight:900,fontSize:9}}>✓</span>}
         </div>
+      ):(
+        <button onClick={ev=>{ev.stopPropagation();onComplete(task.id)}} className={'mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center '+(done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+          {done&&<span style={{color:'white',fontWeight:900,fontSize:9}}>✓</span>}
+        </button>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className={'text-sm leading-snug '+(done?'line-through text-stone-400':'text-stone-800')}>{task.text}</p>
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {task.dueDate&&<span className={'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+(over&&!done?'bg-red-50 text-red-500 border-red-200':'bg-emerald-50 text-emerald-700 border-emerald-100')}>📅 {fmtDate(task.dueDate)}</span>}
+          {task.calendarEventId&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-500 border border-blue-100">📆</span>}
+          {task.project&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-100">📁 {task.project}</span>}
+          {task.priority&&<span className={'text-[10px] px-1.5 py-0.5 rounded-full font-bold border '+PS[task.priority]}>{PF[task.priority]} {task.priority}</span>}
+          {q&&<span className={'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+q.c}>{q.s}</span>}
+          {task.recurring&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600 border border-teal-100">🔄 {task.recurring}</span>}
+          {task.type==='wish'&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-100">✨ Wish</span>}
+          {(task.labels||[]).map(l=><span key={l} className="text-[10px] px-1.5 py-0.5 rounded-full bg-stone-100 text-stone-500 border border-stone-200"># {l}</span>)}
+        </div>
+        <p className="text-[9px] text-stone-300 mt-1">Added {fmtCreated(task.createdAt)}</p>
       </div>
     </div>
-  `;
+  );
 }
 
-/* ── InboxView ──────────────────────────────────────────────── */
-function InboxView({tasks,onComplete,onEdit}){
+/* ── Inbox / Todo bodies ───────────────────────────── */
+function InboxBody({tasks,onComplete,onEdit,selectMode,selected,onSelect}){
   const reg=tasks.filter(t=>t.type!=='wish'),wsh=tasks.filter(t=>t.type==='wish');
-  return html`
-    <div class="pt-5 pb-4">
-      <div class="px-4 mb-4">
-        <h2 class="text-xl font-black text-stone-800">📥 Inbox</h2>
-        <p class="text-xs text-stone-500 mt-0.5">Tap to triage — set date, priority, labels</p>
-      </div>
-      ${!tasks.length && html`<${Empty} i="📭" t="Inbox zero! 🎉" s="Brain dump something to fill it up"/>`}
-      ${reg.map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
-      ${wsh.length>0 && html`
-        <div>
-          <div class="px-4 pt-4 pb-1.5">
-            <p class="text-xs font-black text-violet-500 uppercase tracking-widest">✨ Wishes &amp; Ideas</p>
-            <p class="text-[10px] text-stone-400 mt-0.5">Auto-archived after 7 days if untouched</p>
-          </div>
-          ${wsh.map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
-        </div>
-      `}
+  return(
+    <div className="pb-4">
+      {!tasks.length&&<Empty i="📭" t="Inbox zero! 🎉" s="All tasks triaged. Dump something new."/>}
+      {reg.map(t=><Card key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} selectMode={selectMode} isSelected={selected.includes(t.id)} onSelect={onSelect}/>)}
+      {wsh.length>0&&<React.Fragment>
+        <div className="px-4 pt-3 pb-1.5"><p className="text-xs font-black text-violet-500 uppercase tracking-widest">✨ Wishes</p><p className="text-[10px] text-stone-400">Auto-archived after 7 days</p></div>
+        {wsh.map(t=><Card key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} selectMode={selectMode} isSelected={selected.includes(t.id)} onSelect={onSelect}/>)}
+      </React.Fragment>}
     </div>
-  `;
+  );
 }
 
-/* ── TodoView ───────────────────────────────────────────────── */
-function TodoView({tasks,onComplete,onEdit}){
+function TodoBody({tasks,onComplete,onEdit,selectMode,selected,onSelect}){
   const td=todayISO(),tm=addDays(1);
   const grps=[
     {l:'🔴 Overdue',ts:tasks.filter(t=>t.dueDate<td)},
     {l:'📌 Today',ts:tasks.filter(t=>t.dueDate===td)},
     {l:'🌅 Tomorrow',ts:tasks.filter(t=>t.dueDate===tm)},
     {l:'📅 This Week',ts:tasks.filter(t=>t.dueDate>tm&&withinN(t.dueDate,7))},
-    {l:'🗓️ Later',ts:tasks.filter(t=>!withinN(t.dueDate,7)&&t.dueDate>td)},
+    {l:'🗓 Later',ts:tasks.filter(t=>!withinN(t.dueDate,7)&&t.dueDate>td)},
   ].filter(g=>g.ts.length);
-  return html`
-    <div class="pt-5 pb-4">
-      <div class="px-4 mb-4">
-        <h2 class="text-xl font-black text-stone-800">☑️ To-Do</h2>
-        <p class="text-xs text-stone-500 mt-0.5">Assign dates in Inbox to see tasks here</p>
-      </div>
-      ${!grps.length && html`<${Empty} i="🗒️" t="No scheduled tasks" s="Tap tasks in Inbox to assign a date"/>`}
-      ${grps.map(g=>html`
-        <div key=${g.l}>
-          <div class="px-4 pt-3 pb-1.5"><p class="text-[11px] font-black text-stone-400 uppercase tracking-widest">${g.l}</p></div>
-          ${g.ts.map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
-        </div>
-      `)}
+  return(
+    <div className="pb-4">
+      {!grps.length&&<Empty i="🗒️" t="No scheduled tasks" s="Assign dates in Inbox to see tasks here"/>}
+      {grps.map(g=><div key={g.l}><div className="px-4 pt-3 pb-1.5"><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest">{g.l}</p></div>{g.ts.map(t=><Card key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} selectMode={selectMode} isSelected={selected.includes(t.id)} onSelect={onSelect}/>)}</div>)}
     </div>
-  `;
+  );
 }
 
-/* ── MatrixView ─────────────────────────────────────────────── */
+/* ── Matrix View ───────────────────────────────────── */
 function MatrixView({tasks,onEdit,onComplete}){
   const unset=tasks.filter(t=>!t.eisenhower);
-  return html`
-    <div class="p-4 pt-5 pb-4">
-      <h2 class="text-xl font-black text-stone-800 mb-0.5">🎯 Eisenhower Matrix</h2>
-      <p class="text-xs text-stone-500 mb-3">Tap any task to assign its quadrant</p>
-      <div class="grid grid-cols-2 gap-2">
-        ${EIS.map(q=>{const qt=tasks.filter(t=>t.eisenhower===q.k);return html`
-          <div key=${q.k} class=${'rounded-2xl border-2 p-3 '+q.b} style=${{minHeight:110}}>
-            <p class="text-xs font-black">${q.s}</p>
-            <p class="text-[10px] opacity-50 mb-2">${q.l}</p>
-            ${!qt.length && html`<p class="text-[10px] italic opacity-30">Empty</p>`}
-            ${qt.slice(0,4).map(t=>html`
-              <div key=${t.id} class="flex items-start gap-1.5 mb-1.5" onClick=${()=>onEdit(t)}>
-                <button onClick=${ev=>{ev.stopPropagation();onComplete(t.id)}} class="mt-0.5 w-3.5 h-3.5 rounded-full border border-current flex-shrink-0"></button>
-                <span style=${{fontSize:11,lineHeight:1.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}}>${t.text}</span>
+  return(
+    <div className="p-4 pt-5 pb-4">
+      <h2 className="text-xl font-black text-stone-800 mb-0.5">🎯 Eisenhower Matrix</h2>
+      <p className="text-xs text-stone-500 mb-3">Tap any task to assign its quadrant</p>
+      <div className="grid grid-cols-2 gap-2">
+        {EIS.map(q=>{const qt=tasks.filter(t=>t.eisenhower===q.k);return(
+          <div key={q.k} className={'rounded-2xl border-2 p-3 '+q.b} style={{minHeight:110}}>
+            <p className="text-xs font-black">{q.s}</p><p className="text-[10px] opacity-50 mb-2">{q.l}</p>
+            {!qt.length&&<p className="text-[10px] italic opacity-30">Empty</p>}
+            {qt.slice(0,4).map(t=>(
+              <div key={t.id} className="flex items-start gap-1.5 mb-1.5" onClick={()=>onEdit(t)}>
+                <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className="mt-0.5 w-3.5 h-3.5 rounded-full border border-current flex-shrink-0"/>
+                <span style={{fontSize:11,lineHeight:1.3,overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}}>{t.text}</span>
               </div>
-            `)}
-            ${qt.length>4 && html`<p class="text-[10px] opacity-40">+${qt.length-4} more</p>`}
+            ))}
+            {qt.length>4&&<p className="text-[10px] opacity-40">+{qt.length-4} more</p>}
           </div>
-        `})}
+        )})}
       </div>
-      <div class="flex justify-between px-1 mt-1">
-        <span style=${{fontSize:9}} class="text-stone-400">← Not Urgent</span>
-        <span style=${{fontSize:9}} class="text-stone-400">Urgent →</span>
-      </div>
-      ${unset.length>0 && html`
-        <div class="mt-4">
-          <p class="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">⬜ Uncategorized (${unset.length})</p>
-          ${unset.slice(0,4).map(t=>html`<${Card} key=${t.id} task=${t} onComplete=${onComplete} onEdit=${onEdit}/>`)}
-          ${unset.length>4 && html`<p class="text-center text-xs text-stone-400 mt-1">+${unset.length-4} more in Inbox / Todo</p>`}
-        </div>
-      `}
+      <div className="flex justify-between px-1 mt-1"><span style={{fontSize:9}} className="text-stone-400">← Not Urgent</span><span style={{fontSize:9}} className="text-stone-400">Urgent →</span></div>
+      {unset.length>0&&<div className="mt-4"><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">⬜ Uncategorized ({unset.length})</p>{unset.slice(0,3).map(t=><Card key={t.id} task={t} onComplete={onComplete} onEdit={onEdit}/>)}</div>}
     </div>
-  `;
+  );
 }
 
-/* ── DoneView ───────────────────────────────────────────────── */
+/* ── Done View ─────────────────────────────────────── */
 function DoneView({done,arch,sub,setSub,onUndo,onRestore,onDel}){
-  return html`
-    <div class="pt-5 pb-4">
-      <div class="px-4 mb-4 flex gap-5 border-b border-stone-100 pb-3">
-        ${[['completed','✅ Done',done.length],['archived','📦 Archive',arch.length]].map(([k,l,n])=>html`
-          <button key=${k} onClick=${()=>setSub(k)} class=${'text-sm font-black pb-1 border-b-2 -mb-[13px] '+(sub===k?'border-emerald-500 text-emerald-700':'border-transparent text-stone-400')}>
-            ${l} <span class="font-normal text-xs opacity-60">(${n})</span>
+  return(
+    <div className="pt-5 pb-4">
+      <div className="px-4 mb-4 flex gap-5 border-b border-stone-100 pb-3">
+        {[['completed','✅ Done',done.length],['archived','📦 Archive',arch.length]].map(([k,l,n])=>(
+          <button key={k} onClick={()=>setSub(k)} className={'text-sm font-black pb-1 border-b-2 -mb-[13px] '+(sub===k?'border-emerald-500 text-emerald-700':'border-transparent text-stone-400')}>
+            {l} <span className="font-normal text-xs opacity-60">({n})</span>
           </button>
-        `)}
+        ))}
       </div>
-      ${sub==='completed' && html`
-        <div>
-          ${!done.length && html`<${Empty} i="🏆" t="Nothing completed yet" s="Finish tasks and they appear here"/>`}
-          ${done.map(t=>html`
-            <div key=${t.id} class="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-3 items-center shadow-sm">
-              <button onClick=${()=>onUndo(t.id)} class="w-5 h-5 rounded-full bg-emerald-500 border-2 border-emerald-500 flex-shrink-0 flex items-center justify-center">
-                <span style=${{color:'white',fontWeight:900,fontSize:9}}>✓</span>
-              </button>
-              <div class="flex-1 min-w-0">
-                <p class="text-sm line-through text-stone-400 truncate">${t.text}</p>
-                <p class="text-[10px] text-stone-400">${t.completedAt?new Date(t.completedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):''}</p>
-              </div>
-              <button onClick=${()=>onDel(t.id)} class="text-stone-200 text-xl active:text-red-400">×</button>
+      {sub==='completed'&&<React.Fragment>
+        {!done.length&&<Empty i="🏆" t="Nothing completed yet" s="Finish tasks and they appear here"/>}
+        {done.map(t=>(
+          <div key={t.id} className="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-3 items-center shadow-sm">
+            <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-emerald-500 border-2 border-emerald-500 flex-shrink-0 flex items-center justify-center">
+              <span style={{color:'white',fontWeight:900,fontSize:9}}>✓</span>
+            </button>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm line-through text-stone-400 truncate">{t.text}</p>
+              <p className="text-[10px] text-stone-400">{t.completedAt?new Date(t.completedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):''}</p>
             </div>
-          `)}
-        </div>
-      `}
-      ${sub==='archived' && html`
-        <div>
-          ${!arch.length && html`<${Empty} i="📦" t="Archive is empty" s="Archived and auto-archived wishes live here"/>`}
-          ${arch.map(t=>html`
-            <div key=${t.id} class="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-2.5 items-center shadow-sm opacity-70">
-              <span style=${{fontSize:20}}>📦</span>
-              <div class="flex-1 min-w-0">
-                <p class="text-sm text-stone-500 truncate">${t.text}</p>
-                ${t.autoArchived && html`<p class="text-[10px] text-violet-400">Auto-archived wish</p>`}
-              </div>
-              <button onClick=${()=>onRestore(t.id)} class="text-emerald-400 text-lg active:text-emerald-600 mx-1">↩</button>
-              <button onClick=${()=>onDel(t.id)} class="text-stone-200 text-xl active:text-red-400">×</button>
-            </div>
-          `)}
-        </div>
-      `}
+            <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400">×</button>
+          </div>
+        ))}
+      </React.Fragment>}
+      {sub==='archived'&&<React.Fragment>
+        {!arch.length&&<Empty i="📦" t="Archive empty" s="Archived tasks appear here"/>}
+        {arch.map(t=>(
+          <div key={t.id} className="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-2.5 items-center shadow-sm opacity-70">
+            <span style={{fontSize:20}}>📦</span>
+            <div className="flex-1 min-w-0"><p className="text-sm text-stone-500 truncate">{t.text}</p>{t.autoArchived&&<p className="text-[10px] text-violet-400">Auto-archived wish</p>}</div>
+            <button onClick={()=>onRestore(t.id)} className="text-emerald-400 text-lg active:text-emerald-600 mx-1">↩</button>
+            <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400">×</button>
+          </div>
+        ))}
+      </React.Fragment>}
     </div>
-  `;
+  );
 }
 
-/* ── SettingsView ───────────────────────────────────────────── */
-function SettingsView({cid,setCid,connected,onConnect,onDisconnect,onSync,syncing,labels,onAddLbl,onDelLbl,taskCount}){
+/* ── Settings View ─────────────────────────────────── */
+function SettingsView({cid,setCid,connected,driveSync,onConnect,onDisconnect,onSync,syncing,labels,onAddLbl,onDelLbl,projects,onAddPrj,onDelPrj,taskCount}){
   const [inp,setInp]=useState(cid);
   const [newLbl,setNewLbl]=useState('');
+  const [newPrj,setNewPrj]=useState('');
   const isHttps=location.protocol==='https:';
-  return html`
-    <div class="pt-5 pb-24 px-4">
-      <h2 class="text-xl font-black text-stone-800 mb-0.5">⚙️ Setup</h2>
-      <p class="text-xs text-stone-500 mb-4">Google Calendar · Labels · Stats</p>
-      ${!isHttps && html`
-        <div class="bg-amber-50 border border-amber-200 rounded-2xl p-3 mb-4">
-          <p class="text-xs font-bold text-amber-700">⚠️ HTTPS required for Google Calendar</p>
-          <p class="text-xs text-amber-600 mt-0.5">Deploy to GitHub Pages first. Calendar sync does not work on file:// URLs.</p>
-        </div>
-      `}
-      <div class="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
-        <div class="flex items-center gap-2.5 mb-3">
-          <span style=${{fontSize:24}}>📅</span>
+  return(
+    <div className="pt-5 pb-24 px-4">
+      <h2 className="text-xl font-black text-stone-800 mb-0.5">⚙️ Setup</h2>
+      <p className="text-xs text-stone-500 mb-4">Sync · Projects · Labels</p>
+
+      {!isHttps&&<div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 mb-4"><p className="text-xs font-bold text-amber-700">⚠️ Deploy to HTTPS for Google sync</p><p className="text-xs text-amber-600 mt-0.5">Use Netlify Drop or GitHub Pages — see README.</p></div>}
+
+      {/* Google */}
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
+        <div className="flex items-center gap-2.5 mb-3">
+          <span style={{fontSize:22}}>☁️</span>
           <div>
-            <p class="text-sm font-black text-stone-800">Google Calendar Sync</p>
-            <p class=${'text-xs font-semibold '+(connected?'text-emerald-600':'text-stone-400')}>${connected?'✓ Connected — tasks sync automatically':'Not connected'}</p>
+            <p className="text-sm font-black text-stone-800">Google Sync</p>
+            <p className={'text-xs font-semibold '+(connected?'text-emerald-600':'text-stone-400')}>
+              {driveSync?'⏳ Syncing…':connected?'✓ Drive + Calendar connected':'Not connected'}
+            </p>
           </div>
         </div>
-        ${!connected && html`
-          <div>
-            <div class="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-3">
-              <p class="text-xs font-bold text-blue-800 mb-1.5">📋 One-time Google Cloud setup:</p>
-              <div class="text-xs text-blue-700 space-y-1">
-                <p><strong>1.</strong> Open console.cloud.google.com</p>
-                <p><strong>2.</strong> New project → enable Google Calendar API</p>
-                <p><strong>3.</strong> Credentials → Create OAuth 2.0 Client ID</p>
-                <p><strong>4.</strong> Type: Web application</p>
-                <p><strong>5.</strong> Authorized JS origin: your GitHub Pages URL</p>
-                <p><strong>6.</strong> Copy the Client ID and paste below</p>
-              </div>
-            </div>
-            <input value=${inp} onInput=${e=>setInp(e.target.value)} placeholder="xxxx.apps.googleusercontent.com"
-              class="w-full px-3 py-2.5 text-xs border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-300 bg-stone-50 mb-2 text-stone-700"/>
-            <button onClick=${()=>setCid(inp.trim())} disabled=${!inp.trim()||!isHttps}
-              class="w-full py-2.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-bold active:bg-stone-200 disabled:opacity-40 mb-2">Save Client ID</button>
-            ${cid && isHttps && html`<button onClick=${onConnect} class="w-full py-3 bg-blue-600 text-white rounded-xl text-xs font-black active:bg-blue-700">🔐 Sign in with Google</button>`}
+        {!connected&&<React.Fragment>
+          <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-3 text-xs text-blue-700 space-y-1">
+            <p className="font-bold text-blue-800">📋 Setup (once):</p>
+            <p><strong>1.</strong> console.cloud.google.com → New project</p>
+            <p><strong>2.</strong> Enable Google Calendar API</p>
+            <p><strong>3.</strong> Credentials → OAuth 2.0 Client ID (Web app)</p>
+            <p><strong>4.</strong> Add your app URL as authorized JS origin</p>
+            <p><strong>5.</strong> Paste Client ID below</p>
           </div>
-        `}
-        ${connected && html`
-          <div>
-            <button onClick=${onSync} disabled=${syncing} class="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black active:bg-emerald-700 disabled:opacity-60 mb-2">
-              ${syncing?'⏳ Syncing…':'🔄 Sync all dated tasks now'}
-            </button>
-            <p class="text-[10px] text-stone-400 text-center mb-3">New tasks with dates auto-sync when saved</p>
-            <button onClick=${onDisconnect} class="w-full py-2 bg-stone-50 text-stone-400 rounded-xl text-xs border border-stone-200 active:bg-stone-100">Disconnect</button>
+          <input value={inp} onChange={e=>setInp(e.target.value)} placeholder="xxxx.apps.googleusercontent.com" className="w-full px-3 py-2.5 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 mb-2 text-stone-700"/>
+          <button onClick={()=>setCid(inp.trim())} disabled={!inp.trim()||!isHttps} className="w-full py-2.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-bold disabled:opacity-40 mb-2">Save Client ID</button>
+          {cid&&isHttps&&<button onClick={onConnect} className="w-full py-3 bg-blue-600 text-white rounded-xl text-xs font-black active:bg-blue-700">🔐 Sign in with Google (Drive + Calendar)</button>}
+        </React.Fragment>}
+        {connected&&<React.Fragment>
+          <div className="bg-emerald-50 rounded-xl p-3 mb-3 text-xs text-emerald-700">
+            <p className="font-bold mb-1">✅ What's syncing:</p>
+            <p>• Tasks auto-save to Google Drive</p>
+            <p>• Dated tasks sync to Google Calendar</p>
+            <p>• Completed tasks removed from Calendar</p>
+            <p>• Open on any device → auto-loads latest</p>
           </div>
-        `}
+          <button onClick={onSync} disabled={syncing} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black active:bg-emerald-700 disabled:opacity-60 mb-2">{syncing?'⏳ Syncing…':'🔄 Force sync all to Calendar'}</button>
+          <button onClick={onDisconnect} className="w-full py-2 bg-stone-50 text-stone-400 rounded-xl text-xs border border-stone-200 active:bg-stone-100">Disconnect</button>
+        </React.Fragment>}
       </div>
-      <div class="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
-        <p class="text-sm font-black text-stone-800 mb-3">🏷️ Labels</p>
-        <div class="flex flex-wrap gap-2 mb-3">
-          ${labels.map(l=>html`
-            <div key=${l} class="flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-full pl-3 pr-1.5 py-1">
-              <span class="text-xs font-semibold text-stone-600">${l}</span>
-              <button onClick=${()=>onDelLbl(l)} class="text-stone-300 w-4 h-4 flex items-center justify-center rounded-full active:text-red-400" style=${{fontSize:12}}>×</button>
+
+      {/* Projects */}
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
+        <p className="text-sm font-black text-stone-800 mb-3">📁 Projects</p>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {projects.map(p=>(
+            <div key={p} className="flex items-center gap-1 bg-indigo-50 border border-indigo-100 rounded-full pl-3 pr-1.5 py-1">
+              <span className="text-xs font-semibold text-indigo-700">📁 {p}</span>
+              <button onClick={()=>onDelPrj(p)} className="text-indigo-300 w-4 h-4 flex items-center justify-center rounded-full active:text-red-400" style={{fontSize:12}}>×</button>
             </div>
-          `)}
+          ))}
         </div>
-        <div class="flex gap-2">
-          <input value=${newLbl} onInput=${e=>setNewLbl(e.target.value)} onKeyDown=${e=>{if(e.key==='Enter'&&newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}}
-            placeholder="Add a label…" class="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
-          <button onClick=${()=>{if(newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}}
-            class="px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-black border border-emerald-200 active:bg-emerald-100">Add</button>
+        <div className="flex gap-2">
+          <input value={newPrj} onChange={e=>setNewPrj(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newPrj.trim()){onAddPrj(newPrj.trim());setNewPrj('')}}} placeholder="New project…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+          <button onClick={()=>{if(newPrj.trim()){onAddPrj(newPrj.trim());setNewPrj('')}}} className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-black border border-indigo-200 active:bg-indigo-100">Add</button>
         </div>
       </div>
-      <div class="bg-white rounded-2xl border border-stone-100 shadow-sm p-4">
-        <p class="text-sm font-black text-stone-800 mb-2">📊 Stats</p>
-        <p class="text-xs text-stone-500">${taskCount} total items in your system</p>
-        <p class="text-xs text-stone-400 mt-0.5">All data stored locally on this device</p>
+
+      {/* Labels */}
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
+        <p className="text-sm font-black text-stone-800 mb-3">🏷️ Labels</p>
+        <div className="flex flex-wrap gap-2 mb-3">
+          {labels.map(l=>(
+            <div key={l} className="flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-full pl-3 pr-1.5 py-1">
+              <span className="text-xs font-semibold text-stone-600"># {l}</span>
+              <button onClick={()=>onDelLbl(l)} className="text-stone-300 w-4 h-4 flex items-center justify-center rounded-full active:text-red-400" style={{fontSize:12}}>×</button>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}} placeholder="New label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+          <button onClick={()=>{if(newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}} className="px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-black border border-emerald-200 active:bg-emerald-100">Add</button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4">
+        <p className="text-sm font-black text-stone-800 mb-1">📊 Stats</p>
+        <p className="text-xs text-stone-500">{taskCount} total items · Data on this device + Drive</p>
       </div>
     </div>
-  `;
+  );
 }
 
-/* ── EditModal ──────────────────────────────────────────────── */
-function EditModal({task,labels,onSave,onClose,onDel,onArch,onAddLbl,gcalOk}){
+/* ── Edit Modal ────────────────────────────────────── */
+function EditModal({task,labels,projects,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj,gcalOk}){
   const [t,setT]=useState({...task});
   const [newLbl,setNewLbl]=useState('');
   const s=(k,v)=>setT(p=>({...p,[k]:v}));
   const qd=[{l:'Today',v:todayISO()},{l:'Tomorrow',v:addDays(1)},{l:'This Week',v:addDays(6)},{l:'Clear',v:null}];
   const addL=()=>{const l=newLbl.trim();if(!l||labels.includes(l))return;onAddLbl(l);s('labels',[...(t.labels||[]),l]);setNewLbl('')};
-  return html`
-    <div class="fixed inset-0 z-50 flex flex-col justify-end">
-      <div class="absolute inset-0 bg-black bg-opacity-50" onClick=${onClose}></div>
-      <div class="relative bg-white rounded-t-3xl overflow-y-auto" style=${{maxHeight:'92vh'}}>
-        <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1.5 bg-stone-200 rounded-full"></div></div>
-        <div class="px-5 pb-14">
-          <textarea value=${t.text} onInput=${e=>s('text',e.target.value)}
-            class="w-full mt-3 p-4 text-sm text-stone-800 bg-stone-50 rounded-2xl border border-stone-200 resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 leading-relaxed" style=${{minHeight:64}}></textarea>
-          <${Sec} l="Type">
-            <${Row}>${[['task','✅ Task'],['wish','✨ Wish/Idea']].map(([k,lb])=>html`<${Ch} key=${k} on=${t.type===k} click=${()=>s('type',k)}><span dangerouslySetInnerHTML=${{__html:lb}}></span></${Ch}>`)}</${Row}>
-          </${Sec}>
-          <${Sec} l="Due Date">
-            <${Row} wrap=${true}>${qd.map(({l,v})=>html`<${Ch} key=${l} on=${t.dueDate===v&&v!==null} click=${()=>s('dueDate',v)}>${l}</${Ch}>`)}</${Row}>
-            <input type="date" value=${t.dueDate||''} onChange=${e=>s('dueDate',e.target.value||null)}
-              class="mt-2.5 w-full px-4 py-2.5 text-sm border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-300 bg-white text-stone-700"/>
-          </${Sec}>
-          <${Sec} l="Priority">
-            <${Row}>${['P1','P2','P3','P4'].map(p=>html`
-              <button key=${p} onClick=${()=>s('priority',t.priority===p?null:p)} class=${'px-3 py-2 rounded-xl text-xs font-black border flex items-center gap-1 '+(t.priority===p?PS[p]:'border-stone-200 text-stone-400 bg-white')}>
-                ${PF[p]} ${p}
+  return(
+    <div className="fixed inset-0 z-50 flex flex-col justify-end">
+      <div className="absolute inset-0 bg-black/50" onClick={onClose}/>
+      <div className="relative bg-white rounded-t-3xl overflow-y-auto" style={{maxHeight:'92vh'}}>
+        <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1.5 bg-stone-200 rounded-full"/></div>
+        <div className="px-5 pb-14">
+          <textarea value={t.text} onChange={e=>s('text',e.target.value)} className="w-full mt-3 p-4 text-sm text-stone-800 bg-stone-50 rounded-2xl border border-stone-200 resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 leading-relaxed" style={{minHeight:64}}/>
+
+          <Sec l="Type"><Row>{[['task','✅ Task'],['wish','✨ Wish']].map(([k,lb])=><Ch key={k} on={t.type===k} click={()=>s('type',k)}>{lb}</Ch>)}</Row></Sec>
+
+          <Sec l="Project">
+            <Row wrap>
+              <Ch on={!t.project} click={()=>s('project',null)}>None</Ch>
+              {projects.map(p=><Ch key={p} on={t.project===p} click={()=>s('project',t.project===p?null:p)}>📁 {p}</Ch>)}
+            </Row>
+          </Sec>
+
+          <Sec l="Due Date">
+            <Row wrap>{qd.map(({l,v})=><Ch key={l} on={t.dueDate===v&&v!==null} click={()=>s('dueDate',v)}>{l}</Ch>)}</Row>
+            <input type="date" value={t.dueDate||''} onChange={e=>s('dueDate',e.target.value||null)} className="mt-2.5 w-full px-4 py-2.5 text-sm border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-300 bg-white text-stone-700"/>
+          </Sec>
+
+          <Sec l="Recurrence">
+            <Row wrap>
+              <Ch on={!t.recurring} click={()=>s('recurring',null)}>None</Ch>
+              {['daily','weekly','monthly','yearly'].map(r=><Ch key={r} on={t.recurring===r} click={()=>s('recurring',t.recurring===r?null:r)}>{RECUR_LABELS[r]}</Ch>)}
+            </Row>
+          </Sec>
+
+          <Sec l="Priority">
+            <Row>{['P1','P2','P3','P4'].map(p=>(
+              <button key={p} onClick={()=>s('priority',t.priority===p?null:p)} className={'px-3 py-2 rounded-xl text-xs font-black border flex items-center gap-1 '+(t.priority===p?PS[p]:'border-stone-200 text-stone-400 bg-white')}>
+                {PF[p]} {p}
               </button>
-            `)}</${Row}>
-          </${Sec}>
-          <${Sec} l="Eisenhower Quadrant">
-            <div class="grid grid-cols-2 gap-2">
-              ${EIS.map(q=>html`
-                <button key=${q.k} onClick=${()=>s('eisenhower',t.eisenhower===q.k?null:q.k)} class=${'px-3 py-2.5 rounded-xl text-left border-2 '+(t.eisenhower===q.k?q.b:'border-stone-100 bg-white')}>
-                  <p class="text-xs font-black">${q.s}</p>
-                  <p class="text-[10px] opacity-50 mt-0.5">${q.l}</p>
+            ))}</Row>
+          </Sec>
+
+          <Sec l="Eisenhower Quadrant">
+            <div className="grid grid-cols-2 gap-2">
+              {EIS.map(q=>(
+                <button key={q.k} onClick={()=>s('eisenhower',t.eisenhower===q.k?null:q.k)} className={'px-3 py-2.5 rounded-xl text-left border-2 '+(t.eisenhower===q.k?q.b:'border-stone-100 bg-white')}>
+                  <p className="text-xs font-black">{q.s}</p><p className="text-[10px] opacity-50 mt-0.5">{q.l}</p>
                 </button>
-              `)}
+              ))}
             </div>
-          </${Sec}>
-          <${Sec} l="Labels">
-            <${Row} wrap=${true}>${labels.map(l=>html`
-              <${Ch} key=${l} on=${(t.labels||[]).includes(l)} click=${()=>{const c=t.labels||[];s('labels',c.includes(l)?c.filter(x=>x!==l):[...c,l])}}>${l}</${Ch}>
-            `)}</${Row}>
-            <div class="flex gap-2 mt-2.5">
-              <input value=${newLbl} onInput=${e=>setNewLbl(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&addL()} placeholder="New label…"
-                class="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-white text-stone-700"/>
-              <button onClick=${addL} class="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black active:bg-emerald-100">Add</button>
+          </Sec>
+
+          <Sec l="Labels">
+            <Row wrap>{labels.map(l=><Ch key={l} on={(t.labels||[]).includes(l)} click={()=>{const c=t.labels||[];s('labels',c.includes(l)?c.filter(x=>x!==l):[...c,l])}}># {l}</Ch>)}</Row>
+            <div className="flex gap-2 mt-2.5">
+              <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addL()} placeholder="New label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-white text-stone-700"/>
+              <button onClick={addL} className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black active:bg-emerald-100">Add</button>
             </div>
-          </${Sec}>
-          ${gcalOk && t.dueDate && html`
-            <p class="text-xs text-center mt-3 text-emerald-600">
-              ${t.calendarEventId?'📆 In Google Calendar — will update on save':'📆 Will sync to Google Calendar on save'}
-            </p>
-          `}
-          <div class="flex gap-2 mt-5">
-            <button onClick=${()=>onSave(t)} class="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700">Save</button>
-            <button onClick=${onArch} class="px-4 py-4 bg-stone-100 text-stone-600 rounded-2xl text-lg active:bg-stone-200">📦</button>
-            <button onClick=${onDel} class="px-4 py-4 bg-red-50 text-red-500 rounded-2xl text-lg active:bg-red-100">🗑️</button>
+          </Sec>
+
+          {gcalOk&&t.dueDate&&<p className="text-xs text-center mt-3 text-emerald-600">{t.calendarEventId?'📆 In Calendar — updating on save':'📆 Will sync to Calendar on save'}</p>}
+          {t.recurring&&<p className="text-xs text-center mt-1 text-teal-600">🔄 Next task auto-created when this is completed</p>}
+
+          <div className="flex gap-2 mt-5">
+            <button onClick={()=>onSave(t)} className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700">Save</button>
+            <button onClick={onArch} className="px-4 py-4 bg-stone-100 text-stone-600 rounded-2xl text-lg active:bg-stone-200">📦</button>
+            <button onClick={onDel}  className="px-4 py-4 bg-red-50 text-red-500 rounded-2xl text-lg active:bg-red-100">🗑️</button>
           </div>
         </div>
       </div>
     </div>
-  `;
+  );
 }
 
-/* ── Helpers ────────────────────────────────────────────────── */
-function Empty({i,t,s}){return html`<div class="text-center py-20 px-8"><div style=${{fontSize:48}} class="mb-3">${i}</div><p class="text-sm text-stone-500 font-bold">${t}</p>${s&&html`<p class="text-xs text-stone-400 mt-1">${s}</p>`}</div>`}
-function Sec({l,children}){return html`<div class="mt-5"><p class="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">${l}</p>${children}</div>`}
-function Row({children,wrap}){return html`<div class=${'flex gap-2'+(wrap?' flex-wrap':'')}>${children}</div>`}
-function Ch({on,click,children}){return html`<button onClick=${click} class=${'px-3.5 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}>${children}</button>`}
+/* ── Helpers ───────────────────────────────────────── */
+function Empty({i,t,s}){return<div className="text-center py-16 px-8"><div style={{fontSize:44}} className="mb-3">{i}</div><p className="text-sm text-stone-500 font-bold">{t}</p>{s&&<p className="text-xs text-stone-400 mt-1">{s}</p>}</div>}
+function Sec({l,children}){return<div className="mt-5"><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">{l}</p>{children}</div>}
+function Row({children,wrap}){return<div className={'flex gap-2'+(wrap?' flex-wrap':'')}>{children}</div>}
+function Ch({on,click,children}){return<button onClick={click} className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}>{children}</button>}
+function Fchip({on,click,children}){return<button onClick={click} className={'px-3 py-1 rounded-full text-xs font-bold flex-shrink-0 border '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-stone-50 text-stone-500 border-stone-200')}>{children}</button>}
 
-render(html`<${App}/>`, document.getElementById('root'));
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
 <script>
 if('serviceWorker' in navigator){
-  window.addEventListener('load',function(){
-    navigator.serviceWorker.register('./sw.js').catch(function(){});
-  });
+  window.addEventListener('load',function(){navigator.serviceWorker.register('./sw.js').catch(function(){})});
 }
 </script>
 </body>
