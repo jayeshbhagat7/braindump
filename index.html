@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
-  <title>Brain Dump</title>
+  <title>GTD Brain Dump</title>
   <meta name="mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-title" content="Brain Dump"/>
@@ -16,61 +16,38 @@
   <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-    html,body{height:100%;margin:0;padding:0;background:#F7F7F5;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}
+    html,body{height:100%;margin:0;padding:0;background:#fafaf9;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}
     input,textarea,button{font-family:inherit}
     ::-webkit-scrollbar{display:none}
-    .pri-ring-1{box-shadow:0 0 0 2px #ef4444}
-    .pri-ring-2{box-shadow:0 0 0 2px #f97316}
-    .pri-ring-3{box-shadow:0 0 0 2px #3b82f6}
   </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const {useState,useEffect,useCallback,useRef}=React;
+const {useState,useEffect,useCallback}=React;
 
-/* ── Utilities ──────────────────────────────────────── */
+/* ── Utils ─────────────────────────────────────────── */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const todayISO=()=>new Date().toISOString().slice(0,10);
 const addDays=n=>{const d=new Date();d.setDate(d.getDate()+n);return d.toISOString().slice(0,10)};
 const nextRecur=(d,r)=>{const dt=new Date(d+'T00:00:00');if(r==='daily')dt.setDate(dt.getDate()+1);else if(r==='weekly')dt.setDate(dt.getDate()+7);else if(r==='monthly')dt.setMonth(dt.getMonth()+1);else if(r==='yearly')dt.setFullYear(dt.getFullYear()+1);return dt.toISOString().slice(0,10)};
-const fmtDate=d=>{if(!d)return'';if(d===todayISO())return'Today';if(d===addDays(1))return'Tomorrow';const dt=new Date(d+'T00:00:00');const diff=Math.ceil((dt-new Date(todayISO()+'T00:00:00'))/(864e5));if(diff>0&&diff<=6)return dt.toLocaleDateString('en-IN',{weekday:'short'});return dt.toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
-const fmtFull=d=>d?new Date(d+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}):'';
+const fmtDate=d=>{if(!d)return'';if(d===todayISO())return'Today';if(d===addDays(1))return'Tomorrow';return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
 const fmtCreated=d=>d?new Date(d).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'';
 const isOverdue=d=>!!d&&d<todayISO();
 const withinN=(d,n)=>{if(!d)return false;const s=new Date(todayISO()+'T00:00:00'),e=new Date(s);e.setDate(e.getDate()+n);const dt=new Date(d+'T00:00:00');return dt>=s&&dt<=e};
-const daysOver=d=>{if(!isOverdue(d))return 0;return Math.ceil((new Date(todayISO()+'T00:00:00')-new Date(d+'T00:00:00'))/(864e5))};
+const daysOver=d=>{if(!isOverdue(d))return 0;return Math.floor((Date.now()-new Date(d+'T00:00:00').getTime())/864e5)};
 const effPri=t=>{if(t.priority)return t.priority;const n=daysOver(t.dueDate);if(n>=3)return'P1';if(n>=2)return'P2';if(n>=1)return'P3';return null};
+const isAutoEsc=t=>!t.priority&&daysOver(t.dueDate)>=1;
+// Sort: date primary (asc), then priority within same date
 const sortDP=list=>{const po={P1:1,P2:2,P3:3,P4:4};return[...list].sort((a,b)=>{const da=a.dueDate||'9999',db=b.dueDate||'9999';if(da!==db)return da.localeCompare(db);return(po[effPri(a)]||5)-(po[effPri(b)]||5)})};
+// Parse #tags from text, return {text, tags}
+const parseTags=raw=>{const tags=[];let m;const re=/#([a-zA-Z0-9_]+)/g;while((m=re.exec(raw))!==null)tags.push(m[1]);const clean=raw.replace(/#[a-zA-Z0-9_]+/g,'').replace(/\s+/g,' ').trim();return{text:clean||raw.trim(),tags:[...new Set(tags)]}};
 const ls={get:(k,d=null)=>{try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}},set:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
-
-/* ── NLP Task Parser ────────────────────────────────── */
-const WD=['sun','mon','tue','wed','thu','fri','sat'];
-const nextWD=n=>{const t=new Date();t.setHours(0,0,0,0);const diff=(n-t.getDay()+7)%7||7;const d=new Date(t);d.setDate(d.getDate()+diff);return d.toISOString().slice(0,10)};
-const parseNL=(raw,projects,labels)=>{
-  let text=raw,dueDate=null,priority=null,lbls=[],project=null;
-  // Priority: p1-p4 or !!! !! !
-  const pm=text.match(/\bp([1-4])\b/i);if(pm){priority='P'+pm[1];text=text.replace(pm[0],'').trim()}
-  if(!priority){const em=text.match(/!!!|!!|!/);if(em){priority=em[0]==='!!!'?'P1':em[0]==='!!'?'P2':'P3';text=text.replace(em[0],'').trim()}}
-  // Labels: #tag
-  const tr=/#([a-zA-Z0-9_]+)/g;let m;while((m=tr.exec(raw))!==null)lbls.push(m[1]);text=text.replace(/#[a-zA-Z0-9_]+/g,'').trim();
-  // Project: @name
-  const pr=text.match(/@([a-zA-Z0-9_]+)/i);if(pr){const pn=projects.find(p=>p.name.toLowerCase()===pr[1].toLowerCase());if(pn){project=pn.name;text=text.replace(pr[0],'').trim()}}
-  // Dates
-  if(/\btoday\b/i.test(text)){dueDate=todayISO();text=text.replace(/\btoday\b/i,'').trim()}
-  else if(/\b(tomorrow|tmrw|tmr)\b/i.test(text)){dueDate=addDays(1);text=text.replace(/\b(tomorrow|tmrw|tmr)\b/i,'').trim()}
-  else if(/\bnext week\b/i.test(text)){dueDate=addDays(7);text=text.replace(/\bnext week\b/i,'').trim()}
-  else if(/\bnext month\b/i.test(text)){dueDate=addDays(30);text=text.replace(/\bnext month\b/i,'').trim()}
-  else{for(let i=0;i<7;i++){const re=new RegExp('\\b'+WD[i],'i');if(re.test(text)&&!dueDate){dueDate=nextWD(i);text=text.replace(re,'').trim();break}}}
-  if(!dueDate){const inM=text.match(/\bin (\d+) (day|week|month)s?\b/i);if(inM){const n=parseInt(inM[1]),u=inM[2].toLowerCase();dueDate=u==='day'?addDays(n):u==='week'?addDays(n*7):addDays(n*30);text=text.replace(inM[0],'').trim()}}
-  text=text.replace(/\s+/g,' ').trim();
-  return{text:text||raw.trim(),dueDate,priority,labels:lbls,project};
-};
 
 /* ── Google + Drive ─────────────────────────────────── */
 const GCAL='https://www.googleapis.com/calendar/v3';
 const DAPI='https://www.googleapis.com/drive/v3';
-const DFILE='gtd_v5.json';
+const DFILE='gtd_v4.json';
 let _tc=null,_tok=null;
 const gcal={
   init(cid,onOk){if(!window.google?.accounts?.oauth2)return false;_tc=window.google.accounts.oauth2.initTokenClient({client_id:cid,scope:'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata',callback:r=>{if(r.access_token){_tok=r.access_token;ls.set('tok',_tok);onOk()}}});const s=ls.get('tok');if(s){_tok=s;onOk()}return true},
@@ -81,198 +58,371 @@ const gcal={
 };
 const drv={
   async fid(){let id=ls.get('drv_fid',null);if(id)return id;if(!_tok)return null;try{const r=await fetch(DAPI+'/files?spaces=appDataFolder&q=name%3D%27'+DFILE+'%27&fields=files(id)',{headers:gcal._h()});if(!r.ok){if(r.status===401){_tok=null;ls.set('tok',null)}return null}const d=await r.json();id=(d.files&&d.files[0]&&d.files[0].id)||null;if(id)ls.set('drv_fid',id);return id}catch{return null}},
-  async save(data){if(!_tok)return false;try{const id=await drv.fid();const ts=Date.now();const content=JSON.stringify({...data,_ts:ts});const bnd='gtdv5bnd';const meta=id?'{}':JSON.stringify({name:DFILE,parents:['appDataFolder']});const body='--'+bnd+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+meta+'\r\n--'+bnd+'\r\nContent-Type: application/json\r\n\r\n'+content+'\r\n--'+bnd+'--';const url='https://www.googleapis.com/upload/drive/v3/files'+(id?'/'+id:'')+'?uploadType=multipart';const r=await fetch(url,{method:id?'PATCH':'POST',headers:{'Authorization':'Bearer '+_tok,'Content-Type':'multipart/related; boundary='+bnd},body});if(r.status===401){_tok=null;ls.set('tok',null);return false}if(r.ok){const d=await r.json();const nid=d.id||id;if(nid&&nid!==id)ls.set('drv_fid',nid);ls.set('tasks_ts',ts)}return r.ok}catch{return false}},
+  async save(data){if(!_tok)return false;try{const id=await drv.fid();const ts=Date.now();const content=JSON.stringify({...data,_ts:ts});const bnd='gtdv4bnd';const meta=id?'{}':JSON.stringify({name:DFILE,parents:['appDataFolder']});const body='--'+bnd+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+meta+'\r\n--'+bnd+'\r\nContent-Type: application/json\r\n\r\n'+content+'\r\n--'+bnd+'--';const url='https://www.googleapis.com/upload/drive/v3/files'+(id?'/'+id:'')+'?uploadType=multipart';const r=await fetch(url,{method:id?'PATCH':'POST',headers:{'Authorization':'Bearer '+_tok,'Content-Type':'multipart/related; boundary='+bnd},body});if(r.status===401){_tok=null;ls.set('tok',null);return false}if(r.ok){const d=await r.json();const nid=d.id||id;if(nid&&nid!==id)ls.set('drv_fid',nid);ls.set('tasks_ts',ts)}return r.ok}catch{return false}},
   async load(){if(!_tok)return null;try{const id=await drv.fid();if(!id)return null;const r=await fetch(DAPI+'/files/'+id+'?alt=media',{headers:gcal._h()});if(!r.ok){if(r.status===401){_tok=null;ls.set('tok',null)}return null}return await r.json()}catch{return null}}
 };
 
-/* ── Constants ──────────────────────────────────────── */
-const PC=['#ef4444','#f97316','#eab308','#22c55e','#06b6d4','#3b82f6','#8b5cf6','#ec4899','#78716c','#64748b'];
-const PRI_COLOR={P1:'#ef4444',P2:'#f97316',P3:'#3b82f6',P4:'#9ca3af'};
-const PRI_BG={P1:'bg-red-50',P2:'bg-orange-50',P3:'bg-blue-50',P4:'bg-stone-50'};
-const PRI_LABEL={P1:'🔴 P1 – Priority 1',P2:'🟠 P2 – Priority 2',P3:'🔵 P3 – Priority 3',P4:'⚪ P4 – Priority 4'};
-const EIS=[{k:'do',s:'Do Now',l:'Urgent + Important'},{k:'schedule',s:'Schedule',l:'Important, Not Urgent'},{k:'delegate',s:'Delegate',l:'Urgent, Not Important'},{k:'drop',s:'Drop',l:'Not Urgent/Important'}];
-const RECUR_OPT={daily:'Daily',weekly:'Weekly',monthly:'Monthly',yearly:'Yearly'};
+/* ── Style constants ────────────────────────────────── */
+const PS={P1:'bg-red-50 text-red-600 border-red-200',P2:'bg-orange-50 text-orange-600 border-orange-200',P3:'bg-sky-50 text-sky-700 border-sky-200',P4:'bg-stone-100 text-stone-400 border-stone-200'};
+const PF={P1:'🔴',P2:'🟠',P3:'🔵',P4:'⚪'};
+const EIS=[{k:'do',s:'Do Now',l:'Urgent+Important',b:'border-red-300 bg-red-50',c:'bg-red-50 text-red-700 border-red-200'},{k:'schedule',s:'Schedule',l:'Important,Not Urgent',b:'border-sky-300 bg-sky-50',c:'bg-sky-50 text-sky-700 border-sky-200'},{k:'delegate',s:'Delegate',l:'Urgent,Not Important',b:'border-amber-300 bg-amber-50',c:'bg-amber-50 text-amber-700 border-amber-200'},{k:'drop',s:'Drop',l:'Not Urgent/Important',b:'border-stone-300 bg-stone-50',c:'bg-stone-100 text-stone-500 border-stone-200'}];
+const RECUR={daily:'📆 Daily',weekly:'📅 Weekly',monthly:'🗓 Monthly',yearly:'🔁 Yearly'};
 const GOAL_TIERS=[{k:'short',l:'🎯 Short-term',s:'< 3 months'},{k:'medium',l:'📈 Medium-term',s:'3–12 months'},{k:'long',l:'🌟 Long-term',s:'1–3 years'},{k:'vlong',l:'🚀 Very Long-term',s:'3+ years'}];
+const LBL_COLORS=['bg-sky-100 text-sky-700 border-sky-200','bg-amber-100 text-amber-700 border-amber-200','bg-pink-100 text-pink-700 border-pink-200','bg-purple-100 text-purple-700 border-purple-200','bg-teal-100 text-teal-700 border-teal-200','bg-rose-100 text-rose-700 border-rose-200'];
+const lblColor=(l,lbls)=>{const i=lbls.indexOf(l)%LBL_COLORS.length;return LBL_COLORS[i]||LBL_COLORS[0]};
 
 /* ── App ────────────────────────────────────────────── */
 function App(){
-  // State
   const [tasks,setTasks]=useState(()=>ls.get('tasks',[]));
   const [labels,setLabels]=useState(()=>ls.get('labels',['Personal','Work','Health','Finance']));
-  const [projects,setProjects]=useState(()=>{
-    const raw=ls.get('projects_v2',null);
-    if(raw)return raw;
-    const old=ls.get('projects',['Home','Office','Family']);
-    return old.map((name,i)=>({id:uid(),name,color:PC[i%PC.length]}));
-  });
-  const [view,setView]=useState({tab:'today',prjId:null,lbl:null}); // tab: today|inbox|browse|project|label|search|settings|goals
+  const [projects,setProjects]=useState(()=>ls.get('projects',['Home','Office','Family']));
+  const [tab,setTab]=useState('inbox');
+  const [doneTab,setDoneTab]=useState('completed');
   const [editTask,setEditTask]=useState(null);
-  const [showQuickAdd,setShowQuickAdd]=useState(false);
-  const [searchQ,setSearchQ]=useState('');
+  const [dump,setDump]=useState('');
+  const [dumpProj,setDumpProj]=useState(null);
+  const [dumpLbls,setDumpLbls]=useState([]);
+  const [suggs,setSuggs]=useState([]);
+  const [suggMode,setSuggMode]=useState(null);
+  const [lf,setLf]=useState(null);
   const [gcalCid,setGcalCid]=useState(()=>ls.get('gcal_cid',''));
   const [gcalOk,setGcalOk]=useState(false);
   const [driveOk,setDriveOk]=useState(false);
   const [syncing,setSyncing]=useState(false);
   const [toast,setToast]=useState('');
+  const [selectMode,setSelectMode]=useState(false);
+  const [selected,setSelected]=useState([]);
+  const [showSearch,setShowSearch]=useState(false);
+  const [searchQ,setSearchQ]=useState('');
+  const [showLblAssign,setShowLblAssign]=useState(false);
+  const [editPrj,setEditPrj]=useState(null);
+  const [editPrjVal,setEditPrjVal]=useState('');
   const [ready,setReady]=useState(false);
 
-  // Init
   useEffect(()=>{
     const co=new Date();co.setDate(co.getDate()-7);
     const t=ls.get('tasks',[]).map(t=>{if(t.type==='wish'&&t.status==='inbox'&&new Date(t.createdAt)<co)return{...t,status:'archived',autoArchived:true};return t});
     ls.set('tasks',t);setTasks(t);setReady(true);
   },[]);
+
   useEffect(()=>{
     if(!gcalCid)return;
     const tryInit=()=>{const ok=gcal.init(gcalCid,()=>setGcalOk(true));if(!ok)setTimeout(tryInit,500)};
     if(window.google?.accounts?.oauth2)tryInit();
     else{const id=setInterval(()=>{if(window.google?.accounts?.oauth2){clearInterval(id);tryInit()}},400);return()=>clearInterval(id)}
   },[gcalCid]);
+
   useEffect(()=>{
     if(!gcalOk)return;
-    (async()=>{const data=await drv.load();if(!data){drv.save({tasks,labels,projects,_ts:Date.now()}).then(ok=>ok&&setDriveOk(true));return}setDriveOk(true);const localTs=ls.get('tasks_ts',0);if(data._ts&&data._ts>localTs){if(data.tasks){setTasks(data.tasks);ls.set('tasks',data.tasks);ls.set('tasks_ts',data._ts)}if(data.labels){setLabels(data.labels);ls.set('labels',data.labels)}if(data.projects){setProjects(data.projects);ls.set('projects_v2',data.projects)}showToast('📥 Synced from Drive')}})();
+    (async()=>{
+      const data=await drv.load();
+      if(!data){drv.save({tasks,labels,projects,_ts:Date.now()}).then(ok=>ok&&setDriveOk(true));return}
+      setDriveOk(true);
+      const localTs=ls.get('tasks_ts',0);
+      if(data._ts&&data._ts>localTs){
+        if(data.tasks){setTasks(data.tasks);ls.set('tasks',data.tasks);ls.set('tasks_ts',data._ts)}
+        if(data.labels){setLabels(data.labels);ls.set('labels',data.labels)}
+        if(data.projects){setProjects(data.projects);ls.set('projects',data.projects)}
+        showToast('📥 Synced from Google Drive');
+      }
+    })();
   },[gcalOk]);
 
   const showToast=(m,ms=3000)=>{setToast(m);setTimeout(()=>setToast(''),ms)};
   const persist=useCallback((t,l,p)=>{const fl=l||labels,fp=p||projects;setTasks(t);ls.set('tasks',t);const ts=Date.now();ls.set('tasks_ts',ts);if(gcalOk&&driveOk)drv.save({tasks:t,labels:fl,projects:fp,_ts:ts}).catch(()=>{});},[gcalOk,driveOk,labels,projects]);
   const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk&&driveOk)drv.save({tasks,labels:l,projects}).catch(()=>{})};
-  const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p}).catch(()=>{})};
+  const persistPrjs=p=>{setProjects(p);ls.set('projects',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p}).catch(()=>{})};
 
-  // Task operations
-  const addTask=async(taskData)=>{
-    const t={id:uid(),createdAt:new Date().toISOString(),dueDate:null,labels:[],project:null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,...taskData};
-    let newTasks=[...tasks,t];
-    if(gcalOk&&t.dueDate){const cid=await gcal.create(t);if(cid){t.calendarEventId=cid;newTasks=newTasks.map(x=>x.id===t.id?t:x)}}
-    persist(newTasks);
+  // Dump: parse # tags + smart suggestions
+  const handleDumpChange=val=>{
+    setDump(val);
+    const lines=val.split('\n');const cur=lines[lines.length-1];
+    // Check for #tag in progress
+    const hm=cur.match(/#([a-zA-Z0-9_]*)$/);
+    if(hm){const partial=hm[1].toLowerCase();const m=labels.filter(l=>l.toLowerCase().startsWith(partial)||l.toLowerCase().includes(partial)).slice(0,5);setSuggs(m);setSuggMode('hash');return}
+    // Word suggestion
+    const words=cur.trim().split(/\s+/);const last=words[words.length-1].toLowerCase();
+    if(last.length>=2){const m=[...labels,...projects].filter(x=>x.toLowerCase().includes(last)&&x.toLowerCase()!==last).slice(0,4);setSuggs(m);setSuggMode('word')}
+    else{setSuggs([]);setSuggMode(null)}
   };
+
+  const applySugg=s=>{
+    if(suggMode==='hash'){setDump(prev=>prev.replace(/#([a-zA-Z0-9_]*)$/,'#'+s+' '))}
+    else if(projects.includes(s))setDumpProj(s);
+    else setDumpLbls(p=>p.includes(s)?p:[...p,s]);
+    setSuggs([]);setSuggMode(null);
+  };
+
+  const toggleDumpLbl=l=>setDumpLbls(p=>p.includes(l)?p.filter(x=>x!==l):[...p,l]);
+
+  const addDump=()=>{
+    const lines=dump.split('\n').map(s=>s.trim()).filter(Boolean);if(!lines.length)return;
+    let newLblList=[...labels];
+    const nt=lines.map(line=>{
+      const {text,tags}=parseTags(line);
+      const allLbls=[...new Set([...dumpLbls,...tags])];
+      tags.forEach(t=>{if(!newLblList.includes(t))newLblList.push(t)});
+      return{id:uid(),text,createdAt:new Date().toISOString(),dueDate:null,labels:allLbls,project:dumpProj||null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null};
+    });
+    if(newLblList.length>labels.length)persistLbls(newLblList);
+    persist([...tasks,...nt]);setDump('');setDumpProj(null);setDumpLbls([]);setSuggs([]);setTab('inbox');
+  };
+
   const complete=async id=>{
     const task=tasks.find(t=>t.id===id);if(!task)return;
     const upd={...task,status:'completed',completedAt:new Date().toISOString()};
     let nt=tasks.map(t=>t.id===id?upd:t);
     if(gcalOk&&upd.calendarEventId)gcal.del(upd.calendarEventId);
-    if(task.recurring&&task.dueDate){const nxt={...task,id:uid(),dueDate:nextRecur(task.dueDate,task.recurring),status:'active',completedAt:null,calendarEventId:null,createdAt:new Date().toISOString(),subtasks:[]};nt=[...nt,nxt];if(gcalOk){const cid=await gcal.create(nxt);if(cid)nt=nt.map(t=>t.id===nxt.id?{...t,calendarEventId:cid}:t)}}
+    if(task.recurring&&task.dueDate){const nxt={...task,id:uid(),dueDate:nextRecur(task.dueDate,task.recurring),status:'todo',completedAt:null,calendarEventId:null,createdAt:new Date().toISOString(),subtasks:[]};nt=[...nt,nxt];if(gcalOk){const cid=await gcal.create(nxt);if(cid)nt=nt.map(t=>t.id===nxt.id?{...t,calendarEventId:cid}:t)}}
     persist(nt);
   };
-  const uncomplete=id=>persist(tasks.map(t=>t.id===id?{...t,status:t.dueDate?'active':'inbox',completedAt:null}:t));
+  const uncomplete=id=>persist(tasks.map(t=>t.id===id?{...t,status:t.dueDate?'todo':'inbox',completedAt:null}:t));
   const archive=id=>persist(tasks.map(t=>t.id===id?{...t,status:'archived'}:t));
   const restore=id=>persist(tasks.map(t=>t.id===id?{...t,status:'inbox'}:t));
-  const del=async id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)gcal.del(t.calendarEventId);persist(tasks.filter(x=>x.id!==id))};
-  const toggleSub=(tid,sid)=>persist(tasks.map(t=>t.id!==tid?t:{...t,subtasks:(t.subtasks||[]).map(s=>s.id===sid?{...s,done:!s.done}:s)}));
+  const del=async id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t&&t.calendarEventId)gcal.del(t.calendarEventId);persist(tasks.filter(x=>x.id!==id))};
+  // Toggle subtask directly in list
+  const toggleSubTask=(taskId,stId)=>persist(tasks.map(t=>t.id!==taskId?t:{...t,subtasks:(t.subtasks||[]).map(s=>s.id===stId?{...s,done:!s.done}:s)}));
+
   const saveEdit=async upd=>{
-    // status: if has dueDate → active (scheduled), else inbox
-    let s=upd.project?'active':!upd.dueDate?'inbox':'active';
-    if(upd.status==='completed'||upd.status==='archived')s=upd.status;
+    let s=upd.status;
+    if(upd.dueDate&&s==='inbox')s='todo';
+    if(!upd.dueDate&&s==='todo')s='inbox';
     const old=tasks.find(t=>t.id===upd.id);let ceid=upd.calendarEventId;
-    if(gcalOk){if(upd.dueDate&&s!=='archived'){if(!ceid)ceid=await gcal.create({...upd,status:s});else if(old?.dueDate!==upd.dueDate||old?.text!==upd.text){gcal.del(ceid);ceid=await gcal.create({...upd,status:s})}}else if(ceid){gcal.del(ceid);ceid=null}}
+    if(gcalOk){if(upd.dueDate){if(!ceid)ceid=await gcal.create({...upd,status:s});else if((old&&old.dueDate)!==upd.dueDate||(old&&old.text)!==upd.text){gcal.del(ceid);ceid=await gcal.create({...upd,status:s})}}else if(ceid){gcal.del(ceid);ceid=null}}
     persist(tasks.map(t=>t.id===upd.id?{...upd,status:s,calendarEventId:ceid}:t));setEditTask(null);
   };
+
   const syncAll=async()=>{setSyncing(true);const dated=tasks.filter(t=>t.dueDate&&t.status!=='archived'&&!t.calendarEventId);let upd=[...tasks];let cnt=0;for(const t of dated){const id=await gcal.create(t);if(id){upd=upd.map(u=>u.id===t.id?{...u,calendarEventId:id}:u);cnt++}}persist(upd);setSyncing(false);showToast('✅ Synced '+cnt+' tasks')};
+
+  // Multi-select operations
+  const toggleSel=id=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+  const copySelected=()=>{const texts=selected.map(id=>tasks.find(t=>t.id===id)).filter(Boolean).map(t=>'• '+t.text);if(navigator.clipboard)navigator.clipboard.writeText(texts.join('\n')).then(()=>showToast('📋 Copied '+texts.length+' tasks')).catch(()=>showToast('❌ Copy failed'));setSelectMode(false);setSelected([])};
+  const assignLabels=lbls=>{persist(tasks.map(t=>{if(!selected.includes(t.id))return t;return{...t,labels:[...new Set([...(t.labels||[]),...lbls])]}}));setSelectMode(false);setSelected([]);setShowLblAssign(false);showToast('🏷️ Labels applied to '+selected.length+' tasks')};
+  const archiveSel=()=>{persist(tasks.map(t=>selected.includes(t.id)?{...t,status:'archived'}:t));setSelectMode(false);setSelected([])};
+  const deleteSel=()=>{selected.forEach(id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t&&t.calendarEventId)gcal.del(t.calendarEventId)});persist(tasks.filter(t=>!selected.includes(t.id)));setSelectMode(false);setSelected([])};
 
   if(!ready)return<div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:'#a8a29e'}}><span style={{fontSize:56}}>🧠</span><span style={{fontSize:14,fontWeight:600}}>Loading…</span></div>;
 
-  // Computed
-  const active=tasks.filter(t=>t.status!=='archived'&&t.status!=='completed');
-  const inbox=active.filter(t=>!t.project).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
-  const td=todayISO();
-  const todayTasks=sortDP(active.filter(t=>t.dueDate===td));
-  const overdueTasks=sortDP(active.filter(t=>isOverdue(t.dueDate)));
-  const upcomingTasks=sortDP(active.filter(t=>t.dueDate&&t.dueDate>td&&withinN(t.dueDate,7)));
-  const doneTasks=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
-  const archivedTasks=tasks.filter(t=>t.status==='archived');
-  const goals=active.filter(t=>t.goalType);
-  const prjById=id=>projects.find(p=>p.id===id)||projects.find(p=>p.name===id);
-  const prjTasks=id=>sortDP(active.filter(t=>t.project===id||t.project===(prjById(id)||{}).name));
-  const searchResults=searchQ.length>=2?tasks.filter(t=>t.status!=='archived'&&t.text.toLowerCase().includes(searchQ.toLowerCase())).slice(0,40):[];
-  const inboxN=inbox.length;
-  const todayN=todayTasks.length+overdueTasks.length;
+  // ── KEY BEHAVIORAL CHANGE: only project moves tasks out of inbox
+  const inProject=t=>!!t.project;
+  const matchF=t=>{if(!lf)return true;if(lf.startsWith('p:'))return t.project===lf.slice(2);return(t.labels||[]).includes(lf.slice(2))};
 
-  const nav=(tab,extra={})=>setView({tab,...extra});
+  // Inbox: all tasks with status=inbox, if project filter active → show tasks in that project, else no project filter
+  const inboxAll=tasks.filter(t=>t.status==='inbox').sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
+  const inboxF=lf?tasks.filter(t=>['inbox','todo'].includes(t.status)&&matchF(t)):inboxAll;
+  const todosF=sortDP(tasks.filter(t=>t.status==='todo'&&(lf?matchF(t):true)));
+  const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
+  const arch=tasks.filter(t=>t.status==='archived');
+  const goals=tasks.filter(t=>t.goalType&&!['completed','archived'].includes(t.status));
+  const activeAll=tasks.filter(t=>!['archived','completed'].includes(t.status));
+  const inboxN=inboxAll.length;const todoN=tasks.filter(t=>t.status==='todo').length;
+  const showLf=['inbox','todo','web'].includes(tab);
+  const selPool=(tab==='inbox'?inboxF:todosF).map(t=>t.id);
+  const searchRes=searchQ.length>=2?tasks.filter(t=>t.status!=='archived'&&t.text.toLowerCase().includes(searchQ.toLowerCase())).slice(0,40):[];
+  const isLabelView=!!lf&&['inbox','todo'].includes(tab);
 
   return(
-    <div style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',background:'#F7F7F5'}}>
-      {toast&&<div className="fixed top-4 left-4 right-4 z-50 bg-stone-900 text-white text-sm font-bold px-4 py-3 rounded-2xl text-center shadow-xl">{toast}</div>}
+    <div style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',background:'#fafaf9'}}>
+      {toast&&<div className="fixed top-4 left-4 right-4 z-50 bg-emerald-600 text-white text-sm font-bold px-4 py-3 rounded-2xl text-center shadow-xl">{toast}</div>}
 
-      {/* Main content */}
+      {/* Search overlay */}
+      {showSearch&&(
+        <div className="fixed inset-0 z-40 flex flex-col" style={{background:'#fafaf9'}}>
+          <div className="bg-white border-b border-stone-100 px-4 py-3 flex gap-3 items-center">
+            <span className="text-stone-400 text-lg">🔍</span>
+            <input autoFocus value={searchQ} onChange={e=>setSearchQ(e.target.value)} placeholder="Search all tasks…" className="flex-1 text-sm text-stone-800 bg-transparent focus:outline-none"/>
+            <button onClick={()=>{setShowSearch(false);setSearchQ('')}} className="text-stone-400 font-black text-lg px-1">✕</button>
+          </div>
+          <div className="flex-1 overflow-y-auto pt-3">
+            {searchQ.length>=2&&!searchRes.length&&<Empty i="🔍" t="No results" s={"Nothing matches '"+searchQ+"'"}/>}
+            {searchRes.map(t=><Card key={t.id} task={t} labels={labels} onComplete={complete} onEdit={x=>{setEditTask(x);setShowSearch(false)}} onToggleSub={toggleSubTask}/>)}
+            {searchQ.length<2&&<p className="text-center text-stone-400 text-xs mt-12">Type at least 2 characters</p>}
+          </div>
+        </div>
+      )}
+
+      {/* Label assign modal */}
+      {showLblAssign&&(
+        <div className="fixed inset-0 z-40 flex items-end">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>setShowLblAssign(false)}/>
+          <div className="relative bg-white rounded-t-3xl p-5 w-full">
+            <p className="text-sm font-black text-stone-800 mb-3">🏷️ Assign labels to {selected.length} tasks</p>
+            <LblPicker labels={labels} onConfirm={assignLabels} onClose={()=>setShowLblAssign(false)}/>
+          </div>
+        </div>
+      )}
+
+      {/* Project rename modal */}
+      {editPrj&&(
+        <div className="fixed inset-0 z-40 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>setEditPrj(null)}/>
+          <div className="relative bg-white rounded-2xl p-5 mx-4 w-full max-w-xs">
+            <p className="text-sm font-black text-stone-800 mb-3">✏️ Rename Project</p>
+            <input value={editPrjVal} onChange={e=>setEditPrjVal(e.target.value)} className="w-full px-3 py-2.5 border border-stone-200 rounded-xl text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-emerald-300" autoFocus/>
+            <div className="flex gap-2">
+              <button onClick={()=>{const v=editPrjVal.trim();if(v&&v!==editPrj)persistPrjs(projects.map(x=>x===editPrj?v:x));setEditPrj(null)}} className="flex-1 py-2.5 bg-emerald-600 text-white rounded-xl text-sm font-bold">Save</button>
+              <button onClick={()=>setEditPrj(null)} className="px-4 py-2.5 bg-stone-100 text-stone-600 rounded-xl text-sm">Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filter bar: projects + labels */}
+      {showLf&&(projects.length+labels.length>0)&&(
+        <div className="bg-white border-b border-stone-100 px-3 py-2 flex gap-1.5 overflow-x-auto flex-shrink-0" style={{scrollbarWidth:'none'}}>
+          <Fchip on={!lf} click={()=>setLf(null)}>All</Fchip>
+          {projects.map(p=><Fchip key={'p:'+p} on={lf==='p:'+p} click={()=>setLf(lf==='p:'+p?null:'p:'+p)}>📁 {p}</Fchip>)}
+          {labels.map(l=><Fchip key={'l:'+l} on={lf==='l:'+l} click={()=>setLf(lf==='l:'+l?null:'l:'+l)}># {l}</Fchip>)}
+        </div>
+      )}
+
+      {/* Content */}
       <div className="flex-1 overflow-y-auto">
-        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects}/>}
-        {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
-        {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask}/>}
-        {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
-        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
-        {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
-        {view.tab==='goals'   &&<GoalsView goals={goals} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} labels={labels} projects={projects}/>}
-        {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
-        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect()} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_fid',null)}} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks}/>}
+
+        {/* When label/project filter active on inbox/todo → combined view */}
+        {isLabelView&&(
+          <LabelView tasks={inboxF} lf={lf} labels={labels} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSubTask} selectMode={selectMode} selected={selected} onSelect={toggleSel}/>
+        )}
+
+        {tab==='dump'&&<DumpView text={dump} onChange={handleDumpChange} onAdd={addDump} total={tasks.length} labels={labels} projects={projects} dumpProj={dumpProj} setDumpProj={setDumpProj} dumpLbls={dumpLbls} toggleLbl={toggleDumpLbl} suggs={suggs} suggMode={suggMode} onSugg={applySugg}/>}
+
+        {!isLabelView&&tab==='inbox'&&(
+          <React.Fragment>
+            <div className="flex justify-between items-center px-4 pt-4 pb-1">
+              <div><h2 className="text-xl font-black text-stone-800">📥 Inbox</h2><p className="text-xs text-stone-500 mt-0.5">Assign a project to move a task out</p></div>
+              <div className="flex gap-2">
+                <button onClick={()=>setShowSearch(true)} className="text-stone-400 px-2 text-xl leading-none">🔍</button>
+                <button onClick={()=>{setSelectMode(!selectMode);setSelected([])}} className={'text-xs font-bold px-3 py-1.5 rounded-xl border '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>
+              </div>
+            </div>
+            <InboxBody tasks={inboxAll} labels={labels} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSubTask} selectMode={selectMode} selected={selected} onSelect={toggleSel}/>
+          </React.Fragment>
+        )}
+
+        {!isLabelView&&tab==='todo'&&(
+          <React.Fragment>
+            <div className="flex justify-between items-center px-4 pt-4 pb-1">
+              <div><h2 className="text-xl font-black text-stone-800">☑️ To-Do</h2><p className="text-xs text-stone-500 mt-0.5">Date → priority · 🔴⬆ = auto-escalated</p></div>
+              <div className="flex gap-2">
+                <button onClick={()=>setShowSearch(true)} className="text-stone-400 px-2 text-xl leading-none">🔍</button>
+                <button onClick={()=>{setSelectMode(!selectMode);setSelected([])}} className={'text-xs font-bold px-3 py-1.5 rounded-xl border '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>
+              </div>
+            </div>
+            <TodoBody tasks={todosF} labels={labels} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSubTask} selectMode={selectMode} selected={selected} onSelect={toggleSel}/>
+          </React.Fragment>
+        )}
+
+        {tab==='web'    &&<WebView tasks={activeAll} labels={labels} projects={projects} lf={lf} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSubTask}/>}
+        {tab==='done'   &&<DoneView done={done} arch={arch} goals={goals} sub={doneTab} setSub={setDoneTab} onUndo={uncomplete} onRestore={restore} onDel={del} onEdit={setEditTask} labels={labels}/>}
+        {tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect()} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_fid',null)}} onSync={syncAll} syncing={syncing} labels={labels} onAddLbl={l=>persistLbls([...labels,l])} onDelLbl={l=>persistLbls(labels.filter(x=>x!==l))} projects={projects} onAddPrj={p=>persistPrjs([...projects,p])} onDelPrj={p=>persistPrjs(projects.filter(x=>x!==p))} onEditPrj={p=>{setEditPrj(p);setEditPrjVal(p)}} taskCount={tasks.length} tasks={tasks}/>}
       </div>
 
-      {/* FAB */}
-      {!showQuickAdd&&(
-        <button onClick={()=>setShowQuickAdd(true)} className="fixed z-30 bg-emerald-600 text-white shadow-2xl active:bg-emerald-700 flex items-center justify-center" style={{right:20,bottom:80,width:56,height:56,borderRadius:'50%',fontSize:28,lineHeight:1}}>+</button>
+      {/* Multi-select action bar */}
+      {selectMode&&(
+        <div className="bg-white border-t border-stone-100 px-3 py-2 flex gap-2 items-center flex-shrink-0" style={{overflowX:'auto',scrollbarWidth:'none'}}>
+          <span className="text-xs font-bold text-stone-500 flex-shrink-0">{selected.length} sel</span>
+          <button onClick={()=>setSelected([...selPool])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">All</button>
+          <button onClick={()=>setSelected([])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">None</button>
+          <button onClick={copySelected} disabled={!selected.length} className="text-xs bg-emerald-100 text-emerald-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">📋 Copy</button>
+          <button onClick={()=>selected.length&&setShowLblAssign(true)} disabled={!selected.length} className="text-xs bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">🏷️ Label</button>
+          <button onClick={archiveSel} disabled={!selected.length} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0 disabled:opacity-40">📦</button>
+          <button onClick={deleteSel} disabled={!selected.length} className="text-xs bg-red-50 text-red-500 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0 disabled:opacity-40">🗑️</button>
+        </div>
       )}
 
       {/* Bottom nav */}
       <nav className="bg-white border-t border-stone-100 flex justify-around items-center px-1 flex-shrink-0" style={{paddingTop:8,paddingBottom:10}}>
-        {[{k:'today',e:'🏠',l:'Today',n:todayN},{k:'inbox',e:'📥',l:'Inbox',n:inboxN},{k:'browse',e:'📁',l:'Browse'},{k:'search',e:'🔍',l:'Search'},{k:'settings',e:'⚙️',l:'More'}].map(({k,e,l,n})=>(
-          <button key={k} onClick={()=>nav(k)} className={'relative flex flex-col items-center gap-0.5 px-2 py-0.5 rounded-xl '+(view.tab===k?'text-emerald-600':'text-stone-400')}>
+        {[{k:'dump',e:'🧠',l:'Dump'},{k:'inbox',e:'📥',l:'Inbox',n:inboxN},{k:'todo',e:'☑️',l:'Todo',n:todoN},{k:'web',e:'🕸️',l:'Web'},{k:'done',e:'✅',l:'Done'},{k:'settings',e:'⚙️',l:'Setup'}].map(({k,e,l,n})=>(
+          <button key={k} onClick={()=>{setTab(k);setSelectMode(false);setSelected([])}} className={'relative flex flex-col items-center gap-0.5 px-1.5 py-0.5 rounded-xl '+(tab===k?'text-emerald-600':'text-stone-400')}>
             <span style={{fontSize:20,lineHeight:1}}>{e}</span>
             <span style={{fontSize:9,fontWeight:700}}>{l}</span>
-            {n>0&&<span className="absolute bg-red-500 text-white font-bold rounded-full flex items-center justify-center" style={{fontSize:8,minWidth:13,height:13,padding:'0 2px',top:-2,right:-2}}>{n>99?'99+':n}</span>}
+            {n>0&&<span className="absolute bg-emerald-500 text-white font-bold rounded-full flex items-center justify-center" style={{fontSize:8,minWidth:13,height:13,padding:'0 2px',top:-2,right:-2}}>{n>99?'99+':n}</span>}
           </button>
         ))}
       </nav>
 
-      {/* Quick Add */}
-      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels}/>}
-      {/* Task Edit Modal */}
-      {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])}/>}
+      {editTask&&<EditModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])}/>}
     </div>
   );
 }
 
-/* ── Task Row ────────────────────────────────────────── */
-function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject}){
-  const [expanded,setExpanded]=useState(false);
-  const done=task.status==='completed';
-  const ep=effPri(task);
-  const auto=!task.priority&&daysOver(task.dueDate)>=1;
-  const subs=task.subtasks||[];
-  const doneSubs=subs.filter(s=>s.done).length;
-  const prj=task.project?projects.find(p=>p.name===task.project||p.id===task.project):null;
-  const circleColor=ep?PRI_COLOR[ep]:'#d1d5db';
-
+/* ── Dump View ──────────────────────────────────────── */
+function DumpView({text,onChange,onAdd,total,labels,projects,dumpProj,setDumpProj,dumpLbls,toggleLbl,suggs,suggMode,onSugg}){
+  const n=text.split('\n').filter(l=>l.trim()).length;
+  const inlineTags=[];let m;const re=/#([a-zA-Z0-9_]+)/g;let t2=text;while((m=re.exec(t2))!==null)inlineTags.push(m[1]);
   return(
-    <div className={'bg-white '+(done?'opacity-60':'')}>
-      <div className="flex gap-3 px-4 py-3" onClick={()=>!done&&onEdit(task)}>
-        {/* Priority circle */}
-        <button onClick={ev=>{ev.stopPropagation();onComplete(task.id)}}
-          className="mt-0.5 w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center transition-all"
-          style={{border:'2px solid '+circleColor,background:done?circleColor:'transparent'}}>
-          {done&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-        </button>
-        <div className="flex-1 min-w-0">
-          <p className={'text-sm leading-snug text-stone-800 '+(done?'line-through text-stone-400':'')}>{task.text}</p>
-          <div className="flex flex-wrap items-center gap-2 mt-1">
-            {task.dueDate&&(
-              <span className={'text-[11px] font-semibold '+(isOverdue(task.dueDate)&&!done?'text-red-500':task.dueDate===todayISO()?'text-emerald-600':'text-stone-400')}>
-                📅 {fmtDate(task.dueDate)}{auto&&!done?' ⬆':''}
-              </span>
-            )}
-            {showProject&&prj&&<span className="text-[11px] font-semibold" style={{color:prj.color}}>● {prj.name}</span>}
-            {(task.labels||[]).slice(0,2).map(l=><span key={l} className="text-[10px] text-stone-400">#{l}</span>)}
-            {task.recurring&&<span className="text-[10px] text-teal-500">🔄</span>}
-            {task.goalType&&<span className="text-[10px] text-purple-500">⭐</span>}
+    <div className="p-5 pt-5 flex flex-col gap-3">
+      <div className="text-center"><div style={{fontSize:44}}>🧠</div><h2 className="text-2xl font-black text-stone-800">Brain Dump</h2><p className="text-sm text-stone-500">One thought per line · Type #label to tag inline</p></div>
+      {projects.length>0&&<div><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-1.5">📁 Project</p><div className="flex flex-wrap gap-1.5">{projects.map(p=><button key={p} onClick={()=>setDumpProj(dumpProj===p?null:p)} className={'px-3 py-1.5 rounded-xl text-xs font-bold border '+(dumpProj===p?'bg-indigo-600 text-white border-indigo-600':'bg-white text-stone-600 border-stone-200')}>📁 {p}</button>)}</div></div>}
+      {labels.length>0&&<div><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-1.5">🏷️ Labels <span className="font-normal normal-case">(tap to toggle, or type #tag in text)</span></p><div className="flex flex-wrap gap-1.5">{labels.map(l=><button key={l} onClick={()=>toggleLbl(l)} className={'px-3 py-1.5 rounded-xl text-xs font-bold border '+(dumpLbls.includes(l)?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}># {l}</button>)}</div></div>}
+      <div className="relative">
+        <textarea value={text} onChange={e=>onChange(e.target.value)} autoFocus placeholder={"buy groceries #Personal\ncheck DS yard #Work #urgent\nnew supervisor\n..."} className="w-full h-40 p-4 rounded-2xl border border-stone-200 bg-white text-stone-800 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 shadow-sm leading-relaxed"/>
+        {suggs.length>0&&(
+          <div className="absolute bottom-2 left-2 right-2 bg-white rounded-xl border border-amber-200 shadow-lg p-2 z-10">
+            <p className="text-[10px] text-stone-400 mb-1">{suggMode==='hash'?'💡 Complete tag:':'💡 Suggestions:'}</p>
+            <div className="flex gap-1.5 flex-wrap">{suggs.map(s=><button key={s} onClick={()=>onSugg(s)} className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-1 rounded-lg font-semibold">{suggMode==='hash'?'#':''}{s}</button>)}</div>
           </div>
-          {subs.length>0&&!done&&(
-            <button onClick={ev=>{ev.stopPropagation();setExpanded(!expanded)}} className="flex items-center gap-1 mt-1.5 text-[10px] text-stone-400 font-semibold">
-              <span>{expanded?'▾':'▸'}</span><span>{doneSubs}/{subs.length} sub-tasks</span>
-            </button>
-          )}
+        )}
+      </div>
+      <button onClick={onAdd} disabled={!n} className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700 disabled:opacity-40">
+        {n>0?('➕ Add '+n+' item'+(n!==1?'s':'')):'Type something above…'}
+      </button>
+      {(dumpProj||dumpLbls.length>0||inlineTags.length>0)&&<p className="text-center text-xs text-stone-500">Will tag: {[dumpProj&&('📁 '+dumpProj),...dumpLbls.map(l=>'# '+l),...inlineTags.filter(x=>!dumpLbls.includes(x)).map(x=>'# '+x+' (inline)')].filter(Boolean).join(' • ')}</p>}
+      {total>0&&<p className="text-center text-xs text-stone-400">{total} items in system</p>}
+    </div>
+  );
+}
+
+/* ── Task Card ──────────────────────────────────────── */
+function Card({task,labels,onComplete,onEdit,onToggleSub,selectMode,isSelected,onSelect}){
+  const [expanded,setExpanded]=useState(false);
+  const done=task.status==='completed',over=isOverdue(task.dueDate);
+  const q=EIS.find(e=>e.k===task.eisenhower);
+  const ep=effPri(task);const auto=isAutoEsc(task);
+  const subs=task.subtasks||[];const doneSubs=subs.filter(s=>s.done).length;
+  const handleClick=()=>selectMode?onSelect&&onSelect(task.id):!done&&onEdit(task);
+  return(
+    <div className={'bg-white rounded-2xl border mx-4 mb-2.5 shadow-sm '+(isSelected?'border-emerald-400 bg-emerald-50':over&&!done?'border-red-200':'border-stone-100')}>
+      <div onClick={handleClick} className="px-4 py-3.5 flex gap-3 items-start active:opacity-80">
+        {selectMode?(
+          <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+            {isSelected&&<span style={{color:'white',fontWeight:900,fontSize:9}}>✓</span>}
+          </div>
+        ):(
+          <button onClick={ev=>{ev.stopPropagation();onComplete(task.id)}} className={'mt-0.5 w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center '+(done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+            {done&&<span style={{color:'white',fontWeight:900,fontSize:9}}>✓</span>}
+          </button>
+        )}
+        <div className="flex-1 min-w-0">
+          <p className={'text-sm leading-snug '+(done?'line-through text-stone-400':'text-stone-800')}>{task.text}</p>
+          <div className="flex flex-wrap gap-1 mt-1.5">
+            {task.dueDate&&<span className={'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+(over&&!done?'bg-red-50 text-red-500 border-red-200':'bg-emerald-50 text-emerald-700 border-emerald-100')}>📅 {fmtDate(task.dueDate)}</span>}
+            {task.calendarEventId&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-500 border border-blue-100">📆</span>}
+            {task.project&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-100">📁 {task.project}</span>}
+            {ep&&<span className={'text-[10px] px-1.5 py-0.5 rounded-full font-bold border '+(auto?'bg-red-50 text-red-500 border-red-300':PS[ep])}>{PF[ep]||'⚪'} {ep}{auto?' ⬆':''}</span>}
+            {q&&<span className={'text-[10px] px-1.5 py-0.5 rounded-full font-semibold border '+q.c}>{q.s}</span>}
+            {task.recurring&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-teal-50 text-teal-600 border border-teal-100">🔄 {task.recurring}</span>}
+            {task.goalType&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 border border-purple-100">⭐ Goal</span>}
+            {task.type==='wish'&&<span className="text-[10px] px-1.5 py-0.5 rounded-full bg-violet-50 text-violet-600 border border-violet-100">✨ Wish</span>}
+            {(task.labels||[]).map(l=><span key={l} className={'text-[10px] px-1.5 py-0.5 rounded-full border '+(lblColor(l,labels))}># {l}</span>)}
+          </div>
+          <p className="text-[9px] text-stone-300 mt-1">Added {fmtCreated(task.createdAt)}</p>
+        </div>
+      </div>
+      {/* Inline sub-tasks */}
+      {subs.length>0&&!selectMode&&(
+        <div className="px-4 pb-3 pt-0">
+          <button onClick={ev=>{ev.stopPropagation();setExpanded(!expanded)}} className="flex items-center gap-1.5 text-[10px] text-stone-400 font-semibold mb-1">
+            <span>{expanded?'▾':'▸'}</span>
+            <span>{doneSubs}/{subs.length} sub-tasks</span>
+            {doneSubs===subs.length&&subs.length>0&&<span className="text-emerald-500">✓ all done</span>}
+          </button>
           {expanded&&(
-            <div className="mt-1.5 space-y-1 ml-1">
+            <div className="ml-2 space-y-1">
               {subs.map(st=>(
-                <div key={st.id} onClick={ev=>{ev.stopPropagation();onToggleSub&&onToggleSub(task.id,st.id)}} className="flex items-center gap-2 py-0.5 cursor-pointer">
-                  <div className={'w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center '+(st.done?'border-emerald-500 bg-emerald-500':'border-stone-300')}>
-                    {st.done&&<svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                <div key={st.id} onClick={ev=>{ev.stopPropagation();onToggleSub&&onToggleSub(task.id,st.id)}} className="flex items-center gap-2 py-1 cursor-pointer">
+                  <div className={'w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center '+(st.done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+                    {st.done&&<span style={{color:'white',fontSize:8,fontWeight:900}}>✓</span>}
                   </div>
                   <span className={'text-xs '+(st.done?'line-through text-stone-400':'text-stone-600')}>{st.text}</span>
                 </div>
@@ -280,221 +430,193 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
             </div>
           )}
         </div>
-      </div>
-      <div className="ml-16 h-px bg-stone-100"/>
-    </div>
-  );
-}
-
-/* ── Today View ─────────────────────────────────────── */
-function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,projects}){
-  const [showUpcoming,setShowUpcoming]=useState(false);
-  const dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  const now=new Date();
-  return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4">
-        <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">{dayNames[now.getDay()]}</p>
-        <h2 className="text-3xl font-black text-stone-900">Today</h2>
-        <p className="text-sm text-stone-400 mt-0.5">{now.toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p>
-      </div>
-      {overdue.length===0&&today.length===0&&<div className="text-center py-12 px-8"><div style={{fontSize:48}} className="mb-3">🎉</div><p className="text-base font-bold text-stone-600">All caught up!</p><p className="text-sm text-stone-400 mt-1">No tasks due today</p></div>}
-      {overdue.length>0&&(
-        <div className="mb-2">
-          <div className="px-4 py-2 flex items-center gap-2"><span className="text-xs font-black text-red-500 uppercase tracking-widest">🔴 Overdue ({overdue.length})</span></div>
-          {overdue.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject/>)}
-        </div>
-      )}
-      {today.length>0&&(
-        <div className="mb-2">
-          <div className="px-4 py-2"><span className="text-xs font-black text-emerald-600 uppercase tracking-widest">📌 Today ({today.length})</span></div>
-          {today.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject/>)}
-        </div>
-      )}
-      {upcoming.length>0&&(
-        <div className="mb-2">
-          <button onClick={()=>setShowUpcoming(!showUpcoming)} className="w-full px-4 py-2 flex items-center justify-between text-xs font-black text-stone-400 uppercase tracking-widest">
-            <span>📅 Upcoming ({upcoming.length})</span><span>{showUpcoming?'▾':'▸'}</span>
-          </button>
-          {showUpcoming&&upcoming.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject/>)}
-        </div>
       )}
     </div>
   );
 }
 
-/* ── Inbox View ─────────────────────────────────────── */
-function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects}){
+/* ── Label/Project combined view when filter active ─── */
+function LabelView({tasks,lf,labels,onComplete,onEdit,onToggleSub,selectMode,selected,onSelect}){
+  const name=lf.startsWith('p:')?('📁 '+lf.slice(2)):('# '+lf.slice(2));
+  const inbox=tasks.filter(t=>t.status==='inbox');const todo=sortDP(tasks.filter(t=>t.status==='todo'));
   return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Inbox</h2><p className="text-sm text-stone-400 mt-0.5">Tasks without a project — assign to triage</p></div>
-      {!tasks.length&&<div className="text-center py-12"><div style={{fontSize:48}}>📭</div><p className="text-base font-bold text-stone-600 mt-3">Inbox zero!</p><p className="text-sm text-stone-400 mt-1">Tap + to add tasks</p></div>}
-      {tasks.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects}/>)}
+    <div className="pt-5 pb-4">
+      <div className="px-4 mb-4"><h2 className="text-xl font-black text-stone-800">{name}</h2><p className="text-xs text-stone-500 mt-0.5">All tasks — inbox + scheduled</p></div>
+      {!tasks.length&&<Empty i="📂" t="No tasks here yet" s="Assign this label/project in Dump or task edit"/>}
+      {inbox.length>0&&<React.Fragment><div className="px-4 pt-1 pb-1.5"><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest">📥 Inbox ({inbox.length})</p></div>{inbox.map(t=><Card key={t.id} task={t} labels={labels} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}</React.Fragment>}
+      {todo.length>0&&<React.Fragment><div className="px-4 pt-3 pb-1.5"><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest">☑️ Scheduled ({todo.length})</p></div>{todo.map(t=><Card key={t.id} task={t} labels={labels} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}</React.Fragment>}
     </div>
   );
 }
 
-/* ── Browse View ─────────────────────────────────────── */
-function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,onEdit}){
-  const prjCount=p=>tasks.filter(t=>t.project===p.name||t.project===p.id).length;
-  const lblCount=l=>tasks.filter(t=>(t.labels||[]).includes(l)).length;
+/* ── Inbox / Todo bodies ────────────────────────────── */
+function InboxBody({tasks,labels,onComplete,onEdit,onToggleSub,selectMode,selected,onSelect}){
+  const reg=tasks.filter(t=>t.type!=='wish'),wsh=tasks.filter(t=>t.type==='wish');
   return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Browse</h2></div>
-      {/* Projects */}
-      <div className="mb-1">
-        <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Projects</p>
-        {projects.map(p=>(
-          <button key={p.id||p.name} onClick={()=>onNav('project',{prjId:p.id||p.name})} className="w-full bg-white flex items-center gap-3 px-4 py-3.5 active:bg-stone-50">
-            <span className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-sm font-black" style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0].toUpperCase()}</span>
-            <span className="flex-1 text-left text-sm font-semibold text-stone-800">{p.name}</span>
-            <span className="text-xs text-stone-400">{prjCount(p)}</span>
-            <span className="text-stone-300 text-lg">›</span>
-          </button>
-        ))}
-        {projects.length===0&&<p className="px-4 text-sm text-stone-400 italic">No projects — add in Settings</p>}
+    <div className="pb-4">
+      {!tasks.length&&<Empty i="📭" t="Inbox is empty" s="All tasks are assigned to projects or completed"/>}
+      {reg.map(t=><Card key={t.id} task={t} labels={labels} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} selectMode={selectMode} isSelected={selected.includes(t.id)} onSelect={onSelect}/>)}
+      {wsh.length>0&&<React.Fragment><div className="px-4 pt-3 pb-1.5"><p className="text-xs font-black text-violet-500 uppercase tracking-widest">✨ Wishes</p><p className="text-[10px] text-stone-400">Auto-archived after 7 days</p></div>{wsh.map(t=><Card key={t.id} task={t} labels={labels} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} selectMode={selectMode} isSelected={selected.includes(t.id)} onSelect={onSelect}/>)}</React.Fragment>}
+    </div>
+  );
+}
+function TodoBody({tasks,labels,onComplete,onEdit,onToggleSub,selectMode,selected,onSelect}){
+  const td=todayISO(),tm=addDays(1);
+  const grps=[{l:'🔴 Overdue',ts:tasks.filter(t=>t.dueDate<td)},{l:'📌 Today',ts:tasks.filter(t=>t.dueDate===td)},{l:'🌅 Tomorrow',ts:tasks.filter(t=>t.dueDate===tm)},{l:'📅 This Week',ts:tasks.filter(t=>t.dueDate>tm&&withinN(t.dueDate,7))},{l:'🗓 Later',ts:tasks.filter(t=>!withinN(t.dueDate,7)&&t.dueDate>td)}].filter(g=>g.ts.length);
+  return(
+    <div className="pb-4">
+      {!grps.length&&<Empty i="🗒️" t="No scheduled tasks" s="Assign dates in Inbox to see tasks here"/>}
+      {grps.map(g=><div key={g.l}><div className="px-4 pt-3 pb-1.5"><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest">{g.l}</p></div>{g.ts.map(t=><Card key={t.id} task={t} labels={labels} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} selectMode={selectMode} isSelected={selected.includes(t.id)} onSelect={onSelect}/>)}</div>)}
+    </div>
+  );
+}
+
+/* ── 🕸️ Web of Thoughts View ────────────────────────── */
+function WebView({tasks,labels,projects,lf,onEdit,onComplete,onToggleSub}){
+  const [view,setView]=useState('web'); // 'web'|'matrix'
+  const [focus,setFocus]=useState(null);
+  const active=tasks.filter(t=>!['archived','completed'].includes(t.status));
+  const usedLbls=labels.filter(l=>active.some(t=>(t.labels||[]).includes(l)));
+  const usedPrjs=projects.filter(p=>active.some(t=>t.project===p));
+  const focusTasks=focus?active.filter(t=>{if(focus.startsWith('p:'))return t.project===focus.slice(2);return(t.labels||[]).includes(focus.slice(2))}):[];
+
+  if(view==='matrix')return(
+    <div className="p-4 pt-5 pb-4">
+      <div className="flex items-center gap-3 mb-4">
+        <div><h2 className="text-xl font-black text-stone-800">🎯 Matrix</h2><p className="text-xs text-stone-500">Eisenhower quadrants</p></div>
+        <button onClick={()=>setView('web')} className="ml-auto text-xs bg-stone-100 text-stone-500 px-3 py-1.5 rounded-xl font-semibold">🕸️ Web</button>
       </div>
-      {/* Labels */}
-      {labels.length>0&&(
-        <div className="mt-4 mb-1">
-          <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Labels</p>
-          {labels.map(l=>(
-            <button key={l} onClick={()=>onNav('label',{lbl:l})} className="w-full bg-white flex items-center gap-3 px-4 py-3 active:bg-stone-50">
-              <span className="text-lg">🏷️</span>
-              <span className="flex-1 text-left text-sm font-semibold text-stone-700">{l}</span>
-              <span className="text-xs text-stone-400">{lblCount(l)}</span>
-              <span className="text-stone-300 text-lg">›</span>
-            </button>
-          ))}
-        </div>
+      <div className="grid grid-cols-2 gap-2">
+        {EIS.map(q=>{const qt=active.filter(t=>t.eisenhower===q.k);return(
+          <div key={q.k} className={'rounded-2xl border-2 p-3 '+q.b} style={{minHeight:100}}>
+            <p className="text-xs font-black">{q.s}</p><p className="text-[10px] opacity-50 mb-2">{q.l}</p>
+            {!qt.length&&<p className="text-[10px] italic opacity-30">Empty</p>}
+            {qt.slice(0,4).map(t=><div key={t.id} className="flex items-start gap-1.5 mb-1.5" onClick={()=>onEdit(t)}><button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className="mt-0.5 w-3.5 h-3.5 rounded-full border border-current flex-shrink-0"/><span style={{fontSize:11,lineHeight:1.3}}>{t.text}</span></div>)}
+            {qt.length>4&&<p className="text-[10px] opacity-40">+{qt.length-4} more</p>}
+          </div>
+        )})}
+      </div>
+      <div className="flex justify-between px-1 mt-1"><span style={{fontSize:9}} className="text-stone-400">← Not Urgent</span><span style={{fontSize:9}} className="text-stone-400">Urgent →</span></div>
+    </div>
+  );
+
+  return(
+    <div className="p-4 pt-5 pb-6">
+      <div className="flex items-center justify-between mb-4">
+        <div><h2 className="text-xl font-black text-stone-800">🕸️ Web of Thoughts</h2><p className="text-xs text-stone-500 mt-0.5">Tap a cluster to explore connections</p></div>
+        <button onClick={()=>setView('matrix')} className="text-xs bg-stone-100 text-stone-500 px-3 py-1.5 rounded-xl font-semibold flex-shrink-0">🎯 Matrix</button>
+      </div>
+
+      {/* Focused cluster view */}
+      {focus&&(
+        <React.Fragment>
+          <button onClick={()=>setFocus(null)} className="text-xs text-emerald-600 font-black mb-3 flex items-center gap-1">← All clusters</button>
+          <div className="bg-emerald-50 border-2 border-emerald-200 rounded-2xl p-3 mb-3">
+            <p className="text-sm font-black text-emerald-800">{focus.startsWith('p:')?'📁':'#'} {focus.slice(2)}</p>
+            <p className="text-xs text-emerald-600 mt-0.5">{focusTasks.length} thoughts connected here</p>
+          </div>
+          {!focusTasks.length&&<Empty i="🕸️" t="No thoughts here yet" s="Add this tag in the Dump"/>}
+          {focusTasks.map(t=>{
+            const otherLbls=(t.labels||[]).filter(l=>focus!==('l:'+l));
+            const otherProj=t.project&&focus!==('p:'+t.project)?t.project:null;
+            return(
+              <div key={t.id} className="bg-white rounded-2xl border border-stone-100 p-3 mb-2.5 shadow-sm" onClick={()=>onEdit(t)}>
+                <p className="text-sm text-stone-800 leading-snug">{t.text}</p>
+                {t.dueDate&&<p className="text-[10px] text-emerald-600 mt-1">📅 {fmtDate(t.dueDate)}</p>}
+                {(otherLbls.length>0||otherProj)&&(
+                  <div className="flex gap-1.5 mt-2 flex-wrap items-center">
+                    <span className="text-[10px] text-stone-400">🔗</span>
+                    {otherProj&&<button onClick={ev=>{ev.stopPropagation();setFocus('p:'+otherProj)}} className="text-[10px] bg-indigo-50 text-indigo-600 border border-indigo-200 px-2 py-0.5 rounded-full font-semibold">📁 {otherProj}</button>}
+                    {otherLbls.map(l=><button key={l} onClick={ev=>{ev.stopPropagation();setFocus('l:'+l)}} className="text-[10px] bg-amber-50 text-amber-600 border border-amber-200 px-2 py-0.5 rounded-full font-semibold"># {l}</button>)}
+                  </div>
+                )}
+                <p className="text-[9px] text-stone-300 mt-1.5">Added {fmtCreated(t.createdAt)}</p>
+              </div>
+            );
+          })}
+        </React.Fragment>
       )}
-      {/* Other sections */}
-      <div className="mt-4">
-        <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">More</p>
-        {[{ico:'🌟',l:'Goals',n:goals.length,tab:'goals'},{ico:'✅',l:'Completed',n:doneTasks.length,tab:'done'},{ico:'⚙️',l:'Settings',n:null,tab:'settings'}].map(({ico,l,n,tab})=>(
-          <button key={tab} onClick={()=>onNav(tab)} className="w-full bg-white flex items-center gap-3 px-4 py-3.5 active:bg-stone-50">
-            <span className="text-xl">{ico}</span>
-            <span className="flex-1 text-left text-sm font-semibold text-stone-800">{l}</span>
-            {n!==null&&<span className="text-xs text-stone-400">{n}</span>}
-            <span className="text-stone-300 text-lg">›</span>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
-/* ── Project View ────────────────────────────────────── */
-function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projects}){
-  if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
-  const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
-  const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
-  const [showDone,setShowDone]=useState(false);
-  return(
-    <div className="pb-24">
-      <div className="flex items-center gap-3 px-4 pt-4 pb-2">
-        <button onClick={onBack} className="text-stone-400 text-xl font-bold mr-1">‹</button>
-        <span className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-black text-base" style={{background:prj.color||'#6366f1'}}>{(prj.name||'?')[0].toUpperCase()}</span>
-        <h2 className="text-xl font-black text-stone-900">{prj.name}</h2>
-      </div>
-      <p className="px-4 text-xs text-stone-400 mb-3">{active.length} task{active.length!==1?'s':''}</p>
-      {active.length===0&&<div className="text-center py-12"><div style={{fontSize:40}}>✅</div><p className="text-sm font-bold text-stone-500 mt-2">All done in {prj.name}</p></div>}
-      {active.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects}/>)}
-      {done.length>0&&(
-        <div className="mt-2">
-          <button onClick={()=>setShowDone(!showDone)} className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-black text-stone-400 uppercase tracking-widest bg-white">
-            <span>✅ Completed ({done.length})</span><span>{showDone?'▾':'▸'}</span>
-          </button>
-          {showDone&&done.slice(0,20).map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects}/>)}
-        </div>
+      {/* All clusters overview */}
+      {!focus&&(
+        <React.Fragment>
+          {(usedPrjs.length===0&&usedLbls.length===0)&&<Empty i="🕸️" t="No labeled thoughts yet" s="Type #label or assign project in the Dump to see connections"/>}
+          {usedPrjs.map(p=>{
+            const pt=active.filter(t=>t.project===p);
+            const crossLinked=pt.filter(t=>(t.labels||[]).length>0);
+            return(
+              <div key={p} className="bg-white rounded-2xl border border-indigo-100 p-3 mb-3 shadow-sm" onClick={()=>setFocus('p:'+p)}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-black text-indigo-700">📁 {p}</span>
+                  <span className="text-xs text-stone-400">{pt.length} tasks · {crossLinked.length} cross-labeled</span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {pt.slice(0,4).map(t=><span key={t.id} className="text-[10px] bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1 text-indigo-700 truncate" style={{maxWidth:140}}>{t.text}</span>)}
+                  {pt.length>4&&<span className="text-[10px] text-stone-400 px-2 py-1">+{pt.length-4}</span>}
+                </div>
+                {crossLinked.length>0&&<p className="text-[10px] text-stone-400 mt-1.5">🔗 Also tagged: {[...new Set(crossLinked.flatMap(t=>t.labels||[]))].slice(0,4).map(l=>'#'+l).join(' ')}</p>}
+              </div>
+            );
+          })}
+          {usedLbls.map(l=>{
+            const lt=active.filter(t=>(t.labels||[]).includes(l));
+            const crossLinked=lt.filter(t=>(t.labels||[]).length>1||t.project);
+            return(
+              <div key={l} className="bg-white rounded-2xl border border-stone-100 p-3 mb-3 shadow-sm" onClick={()=>setFocus('l:'+l)}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-black text-stone-700"># {l}</span>
+                  <span className="text-xs text-stone-400">{lt.length} thoughts · {crossLinked.length} connected</span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {lt.slice(0,5).map(t=><span key={t.id} className={'text-[10px] rounded-lg px-2 py-1 border truncate '+lblColor(l,usedLbls)} style={{maxWidth:130}}>{t.text}</span>)}
+                  {lt.length>5&&<span className="text-[10px] text-stone-400 px-2 py-1">+{lt.length-5}</span>}
+                </div>
+                {crossLinked.length>0&&<p className="text-[10px] text-stone-400 mt-1.5">🔗 Shared with: {[...new Set(crossLinked.flatMap(t=>[...(t.labels||[]).filter(x=>x!==l),t.project?('📁 '+t.project):null].filter(Boolean)))].slice(0,4).join(' ')}</p>}
+              </div>
+            );
+          })}
+        </React.Fragment>
       )}
     </div>
   );
 }
 
-/* ── Label View ──────────────────────────────────────── */
-function LabelView({lbl,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projects}){
-  const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
+/* ── Done View ──────────────────────────────────────── */
+function DoneView({done,arch,goals,sub,setSub,onUndo,onRestore,onDel,onEdit,labels}){
   return(
-    <div className="pb-24">
-      <div className="flex items-center gap-3 px-4 pt-4 pb-4">
-        <button onClick={onBack} className="text-stone-400 text-xl font-bold mr-1">‹</button>
-        <span className="text-xl">🏷️</span>
-        <h2 className="text-xl font-black text-stone-900"># {lbl}</h2>
-      </div>
-      {!active.length&&<div className="text-center py-12"><div style={{fontSize:40}}>🏷️</div><p className="text-sm font-bold text-stone-500 mt-2">No tasks with #{lbl}</p></div>}
-      {sortDP(active).map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject/>)}
-    </div>
-  );
-}
-
-/* ── Search View ─────────────────────────────────────── */
-function SearchView({q,setQ,results,onComplete,onEdit,onToggleSub,labels,projects}){
-  return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-3"><h2 className="text-3xl font-black text-stone-900">Search</h2></div>
-      <div className="px-4 pb-3">
-        <div className="flex items-center gap-2 bg-white rounded-2xl border border-stone-200 px-3 py-2.5 shadow-sm">
-          <span className="text-stone-400">🔍</span>
-          <input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder="Search all tasks…" className="flex-1 text-sm text-stone-800 bg-transparent focus:outline-none"/>
-          {q&&<button onClick={()=>setQ('')} className="text-stone-300 font-bold text-lg">×</button>}
-        </div>
-      </div>
-      {q.length>=2&&!results.length&&<div className="text-center py-12 text-stone-400"><div style={{fontSize:40}}>🔍</div><p className="text-sm mt-2">No results for "{q}"</p></div>}
-      {results.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject/>)}
-      {q.length<2&&<p className="text-center text-stone-400 text-xs mt-8 px-8">Type to search across all tasks, projects, labels</p>}
-    </div>
-  );
-}
-
-/* ── Goals View ──────────────────────────────────────── */
-function GoalsView({goals,doneTasks,onEdit,labels,projects}){
-  return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Goals</h2><p className="text-sm text-stone-400 mt-0.5">Long-term aspirations linked to your tasks</p></div>
-      {!goals.length&&<div className="text-center py-12"><div style={{fontSize:44}}>🌟</div><p className="text-sm font-bold text-stone-500 mt-2">No goals yet</p><p className="text-xs text-stone-400 mt-1">In task edit, set a Goal Timeline</p></div>}
-      {GOAL_TIERS.map(tier=>{const tg=goals.filter(g=>g.goalType===tier.k);return tg.length?(
-        <div key={tier.k} className="mb-2">
-          <div className="px-4 py-2"><p className="text-sm font-black text-stone-700">{tier.l}</p><p className="text-xs text-stone-400">{tier.s}</p></div>
-          {tg.map(t=><TaskRow key={t.id} task={t} onComplete={()=>{}} onEdit={onEdit} onToggleSub={()=>{}} projects={projects} showProject/>)}
-        </div>
-      ):null})}
-    </div>
-  );
-}
-
-/* ── Done View ───────────────────────────────────────── */
-function DoneView({done,arch,onUndo,onRestore,onDel}){
-  const [tab,setTab]=useState('completed');
-  return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">{tab==='completed'?'Completed':'Archive'}</h2></div>
-      <div className="flex px-4 gap-4 mb-2">
-        {[['completed','✅ Done',done.length],['archived','📦 Archive',arch.length]].map(([k,l,n])=>(
-          <button key={k} onClick={()=>setTab(k)} className={'text-sm font-black pb-1 border-b-2 '+(tab===k?'border-emerald-500 text-emerald-700':'border-transparent text-stone-400')}>
+    <div className="pt-5 pb-4">
+      <div className="px-4 mb-4 flex gap-4 border-b border-stone-100 pb-3 overflow-x-auto" style={{scrollbarWidth:'none'}}>
+        {[['completed','✅ Done',done.length],['goals','🌟 Goals',goals.length],['archived','📦 Archive',arch.length]].map(([k,l,n])=>(
+          <button key={k} onClick={()=>setSub(k)} className={'text-sm font-black pb-1 border-b-2 -mb-[13px] flex-shrink-0 '+(sub===k?'border-emerald-500 text-emerald-700':'border-transparent text-stone-400')}>
             {l} <span className="font-normal text-xs opacity-60">({n})</span>
           </button>
         ))}
       </div>
-      {tab==='completed'&&<React.Fragment>
-        {!done.length&&<div className="text-center py-12"><div style={{fontSize:44}}>🏆</div><p className="text-sm font-bold text-stone-500 mt-2">Nothing completed yet</p></div>}
+      {sub==='completed'&&<React.Fragment>
+        {!done.length&&<Empty i="🏆" t="Nothing completed yet" s="Finish tasks and they appear here"/>}
         {done.map(t=>(
-          <div key={t.id} className="bg-white flex items-center gap-3 px-4 py-3 active:bg-stone-50">
-            <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-emerald-500 border-2 border-emerald-500 flex-shrink-0 flex items-center justify-center">
-              <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </button>
-            <div className="flex-1 min-w-0"><p className="text-sm line-through text-stone-400 truncate">{t.text}</p><p className="text-[10px] text-stone-300">{t.completedAt?new Date(t.completedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):''}</p></div>
-            <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400 flex-shrink-0">×</button>
+          <div key={t.id} className="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-3 items-center shadow-sm">
+            <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-emerald-500 border-2 border-emerald-500 flex-shrink-0 flex items-center justify-center"><span style={{color:'white',fontWeight:900,fontSize:9}}>✓</span></button>
+            <div className="flex-1 min-w-0"><p className="text-sm line-through text-stone-400 truncate">{t.text}</p><p className="text-[10px] text-stone-400">{t.completedAt?new Date(t.completedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):''}</p></div>
+            <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400">×</button>
           </div>
         ))}
       </React.Fragment>}
-      {tab==='archived'&&<React.Fragment>
-        {!arch.length&&<div className="text-center py-12"><div style={{fontSize:44}}>📦</div><p className="text-sm font-bold text-stone-500 mt-2">Archive empty</p></div>}
+      {sub==='goals'&&(
+        <div className="pb-4">
+          {!goals.length&&<Empty i="🌟" t="No goals yet" s="In task edit, set a Goal Timeline"/>}
+          {GOAL_TIERS.map(tier=>{const tg=goals.filter(g=>g.goalType===tier.k);return tg.length?(
+            <div key={tier.k}><div className="px-4 pt-3 pb-1.5"><p className="text-sm font-black text-stone-700">{tier.l}</p><p className="text-xs text-stone-400">{tier.s}</p></div>{tg.map(g=><Card key={g.id} task={g} labels={labels} onComplete={()=>{}} onEdit={onEdit} onToggleSub={()=>{}}/>)}</div>
+          ):null})}
+        </div>
+      )}
+      {sub==='archived'&&<React.Fragment>
+        {!arch.length&&<Empty i="📦" t="Archive empty" s="Archived tasks appear here"/>}
         {arch.map(t=>(
-          <div key={t.id} className="bg-white flex items-center gap-3 px-4 py-3 opacity-60 active:bg-stone-50">
-            <span style={{fontSize:18}}>📦</span>
-            <div className="flex-1 min-w-0"><p className="text-sm text-stone-500 truncate">{t.text}</p>{t.autoArchived&&<p className="text-[10px] text-violet-400">Auto-archived</p>}</div>
-            <button onClick={()=>onRestore(t.id)} className="text-emerald-400 text-lg mr-2 active:text-emerald-600">↩</button>
+          <div key={t.id} className="bg-white rounded-2xl border border-stone-100 mx-4 mb-2.5 px-4 py-3 flex gap-2.5 items-center shadow-sm opacity-70">
+            <span style={{fontSize:20}}>📦</span>
+            <div className="flex-1 min-w-0"><p className="text-sm text-stone-500 truncate">{t.text}</p>{t.autoArchived&&<p className="text-[10px] text-violet-400">Auto-archived wish</p>}</div>
+            <button onClick={()=>onRestore(t.id)} className="text-emerald-400 text-lg active:text-emerald-600 mx-1">↩</button>
             <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400">×</button>
           </div>
         ))}
@@ -503,164 +625,112 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
   );
 }
 
-/* ── Quick Add ───────────────────────────────────────── */
-function QuickAdd({onAdd,onClose,projects,labels}){
-  const [text,setText]=useState('');
-  const [parsed,setParsed]=useState({text:'',dueDate:null,priority:null,labels:[],project:null});
-  const ref=useRef(null);
-  useEffect(()=>{ref.current&&ref.current.focus()},[]);
-  const handleChange=v=>{setText(v);setParsed(parseNL(v,projects,labels))};
-  const handleAdd=()=>{
-    if(!text.trim())return;
-    const p=parseNL(text,projects,labels);
-    onAdd({text:p.text||text.trim(),dueDate:p.dueDate,priority:p.priority,labels:p.labels,project:p.project,type:'task',status:p.project?'active':'inbox'});
-    onClose();
-  };
-  const hasMeta=parsed.dueDate||parsed.priority||parsed.labels.length>0||parsed.project;
+/* ── Settings View ──────────────────────────────────── */
+function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onSync,syncing,labels,onAddLbl,onDelLbl,projects,onAddPrj,onDelPrj,onEditPrj,taskCount,tasks}){
+  const [inp,setInp]=useState(cid);const [newLbl,setNewLbl]=useState('');const [newPrj,setNewPrj]=useState('');
+  const isHttps=location.protocol==='https:';
+  const prjStats=p=>tasks.filter(t=>t.project===p&&t.status!=='archived').length;
   return(
-    <div className="fixed inset-0 z-50 flex flex-col justify-end">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose}/>
-      <div className="relative bg-white rounded-t-3xl px-4 pt-4 pb-8">
-        <div className="flex justify-center mb-3"><div className="w-10 h-1 bg-stone-200 rounded-full"/></div>
-        <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">Quick Add</p>
-        <input ref={ref} value={text} onChange={e=>handleChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdd()} placeholder="Task name… tomorrow @Project #label p1" className="w-full text-base text-stone-900 bg-transparent border-b-2 border-stone-200 focus:border-emerald-500 focus:outline-none pb-2 mb-3 transition-colors"/>
-        {/* NLP preview */}
-        {hasMeta&&(
-          <div className="flex flex-wrap gap-2 mb-3 p-3 bg-stone-50 rounded-xl">
-            {parsed.dueDate&&<span className={'text-xs font-semibold px-2 py-1 rounded-lg '+(parsed.dueDate===todayISO()?'bg-emerald-100 text-emerald-700':isOverdue(parsed.dueDate)?'bg-red-100 text-red-600':'bg-stone-200 text-stone-600')}>📅 {fmtDate(parsed.dueDate)}</span>}
-            {parsed.priority&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-700" style={{color:PRI_COLOR[parsed.priority]}}>● {parsed.priority}</span>}
-            {parsed.project&&<span className="text-xs font-semibold px-2 py-1 rounded-lg text-white" style={{background:projects.find(p=>p.name===parsed.project)?.color||'#6366f1'}}>📁 {parsed.project}</span>}
-            {parsed.labels.map(l=><span key={l} className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-600"># {l}</span>)}
-          </div>
-        )}
-        <div className="text-[11px] text-stone-400 mb-3">Tip: <span className="font-semibold text-stone-500">tomorrow</span> · <span className="font-semibold text-stone-500">@Project</span> · <span className="font-semibold text-stone-500">#label</span> · <span className="font-semibold text-stone-500">p1</span> · <span className="font-semibold text-stone-500">mon/tue/wed…</span></div>
-        <button onClick={handleAdd} disabled={!text.trim()} className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700 disabled:opacity-40">
-          Add Task
-        </button>
+    <div className="pt-5 pb-24 px-4">
+      <h2 className="text-xl font-black text-stone-800 mb-0.5">⚙️ Setup</h2>
+      <p className="text-xs text-stone-500 mb-4">Sync · Projects · Labels</p>
+      {!isHttps&&<div className="bg-amber-50 border border-amber-200 rounded-2xl p-3 mb-4"><p className="text-xs font-bold text-amber-700">⚠️ Deploy to HTTPS for Google sync</p></div>}
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
+        <div className="flex items-center gap-2.5 mb-3"><span style={{fontSize:22}}>☁️</span><div><p className="text-sm font-black text-stone-800">Google Sync</p><p className={'text-xs font-semibold '+(driveOk?'text-emerald-600':connected?'text-amber-500':'text-stone-400')}>{driveOk?'✓ Drive + Calendar active':connected?'⏳ Connecting…':'Not connected'}</p></div></div>
+        {!connected&&<React.Fragment>
+          <div className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-3 text-xs text-blue-700 space-y-1"><p className="font-bold text-blue-800">📋 One-time setup:</p><p><strong>1.</strong> console.cloud.google.com → New project</p><p><strong>2.</strong> Enable Google Calendar API</p><p><strong>3.</strong> Credentials → OAuth 2.0 Client ID (Web app)</p><p><strong>4.</strong> Add app URL as Authorized JS origin</p><p><strong>5.</strong> Paste Client ID below</p></div>
+          <input value={inp} onChange={e=>setInp(e.target.value)} placeholder="xxxx.apps.googleusercontent.com" className="w-full px-3 py-2.5 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 mb-2 text-stone-700"/>
+          <button onClick={()=>setCid(inp.trim())} disabled={!inp.trim()||!isHttps} className="w-full py-2.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-bold disabled:opacity-40 mb-2">Save Client ID</button>
+          {cid&&isHttps&&<button onClick={onConnect} className="w-full py-3 bg-blue-600 text-white rounded-xl text-xs font-black active:bg-blue-700">🔐 Sign in with Google</button>}
+        </React.Fragment>}
+        {connected&&<React.Fragment>
+          {driveOk&&<div className="bg-emerald-50 rounded-xl p-3 mb-2 text-xs text-emerald-700 space-y-0.5"><p className="font-bold">✅ Syncing:</p><p>• Tasks auto-save to Drive on every change</p><p>• Dated tasks → Calendar event · Completed → deleted</p><p>• Open on any device → loads latest from Drive</p></div>}
+          <button onClick={onSync} disabled={syncing} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black active:bg-emerald-700 disabled:opacity-60 mb-2">{syncing?'⏳ Syncing…':'🔄 Force sync Calendar'}</button>
+          <button onClick={onDisconnect} className="w-full py-2 bg-stone-50 text-stone-400 rounded-xl text-xs border border-stone-200 active:bg-stone-100">Disconnect</button>
+        </React.Fragment>}
       </div>
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
+        <p className="text-sm font-black text-stone-800 mb-3">📁 Projects <span className="font-normal text-stone-400 text-xs">({projects.length})</span></p>
+        <div className="mb-3 space-y-2">
+          {projects.map(p=>(
+            <div key={p} className="flex items-center gap-2 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2.5">
+              <div className="flex-1 min-w-0"><p className="text-xs font-black text-indigo-700">📁 {p}</p><p className="text-[10px] text-indigo-400">{prjStats(p)} tasks</p></div>
+              <button onClick={()=>onEditPrj(p)} className="text-xs text-indigo-500 font-semibold px-2 py-1 bg-indigo-100 rounded-lg active:bg-indigo-200 flex-shrink-0">Rename</button>
+              <button onClick={()=>onDelPrj(p)} className="text-red-300 font-bold w-6 h-6 flex items-center justify-center rounded-lg active:text-red-500 flex-shrink-0" style={{fontSize:18}}>×</button>
+            </div>
+          ))}
+          {projects.length===0&&<p className="text-xs text-stone-400 italic">No projects yet</p>}
+        </div>
+        <div className="flex gap-2">
+          <input value={newPrj} onChange={e=>setNewPrj(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newPrj.trim()){onAddPrj(newPrj.trim());setNewPrj('')}}} placeholder="New project name…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+          <button onClick={()=>{if(newPrj.trim()){onAddPrj(newPrj.trim());setNewPrj('')}}} className="px-4 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-xs font-black border border-indigo-200 active:bg-indigo-100">Add</button>
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4 mb-4">
+        <p className="text-sm font-black text-stone-800 mb-3">🏷️ Labels <span className="font-normal text-stone-400 text-xs">({labels.length})</span></p>
+        <div className="flex flex-wrap gap-2 mb-3">{labels.map(l=><div key={l} className="flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-full pl-3 pr-1.5 py-1"><span className="text-xs font-semibold text-stone-600"># {l}</span><button onClick={()=>onDelLbl(l)} className="text-stone-300 w-4 h-4 flex items-center justify-center rounded-full active:text-red-400" style={{fontSize:12}}>×</button></div>)}</div>
+        <div className="flex gap-2">
+          <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}} placeholder="New label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+          <button onClick={()=>{if(newLbl.trim()){onAddLbl(newLbl.trim());setNewLbl('')}}} className="px-4 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-black border border-emerald-200 active:bg-emerald-100">Add</button>
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl border border-stone-100 shadow-sm p-4"><p className="text-sm font-black text-stone-800 mb-1">📊 Stats</p><p className="text-xs text-stone-500">{taskCount} total items · Drive + local storage</p></div>
     </div>
   );
 }
 
-/* ── Task Modal (full edit) ──────────────────────────── */
-function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj}){
-  const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null,notes:task.notes||''});
+/* ── Edit Modal ─────────────────────────────────────── */
+function EditModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj}){
+  const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null});
   const [newLbl,setNewLbl]=useState('');const [newSub,setNewSub]=useState('');
   const s=(k,v)=>setT(p=>({...p,[k]:v}));
-  const qd=[{l:'Today',v:todayISO()},{l:'Tomorrow',v:addDays(1)},{l:'This Week',v:addDays(6)},{l:'Next Month',v:addDays(30)},{l:'Clear',v:null}];
+  const qd=[{l:'Today',v:todayISO()},{l:'Tomorrow',v:addDays(1)},{l:'This Week',v:addDays(6)},{l:'Clear',v:null}];
   const addL=()=>{const l=newLbl.trim();if(!l||labels.includes(l))return;onAddLbl(l);s('labels',[...(t.labels||[]),l]);setNewLbl('')};
   const addSub=()=>{if(!newSub.trim())return;s('subtasks',[...(t.subtasks||[]),{id:uid(),text:newSub.trim(),done:false}]);setNewSub('')};
   const togSub=i=>s('subtasks',(t.subtasks||[]).map((x,j)=>j===i?{...x,done:!x.done}:x));
   const delSub=i=>s('subtasks',(t.subtasks||[]).filter((_,j)=>j!==i));
-  const related=t.labels&&t.labels.length?allTasks.filter(r=>r.id!==t.id&&!['archived','completed'].includes(r.status)&&(r.labels||[]).some(l=>(t.labels||[]).includes(l))).slice(0,4):[];
-  const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
+  const related=t.labels&&t.labels.length?allTasks.filter(r=>r.id!==t.id&&!['archived','completed'].includes(r.status)&&(r.labels||[]).some(l=>(t.labels||[]).includes(l))).slice(0,5):[];
   return(
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/50" onClick={onClose}/>
-      <div className="relative bg-white rounded-t-3xl overflow-y-auto" style={{maxHeight:'94vh'}}>
+      <div className="relative bg-white rounded-t-3xl overflow-y-auto" style={{maxHeight:'92vh'}}>
         <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1.5 bg-stone-200 rounded-full"/></div>
-        {/* Header row */}
-        <div className="flex items-center gap-3 px-4 pb-2 pt-1">
-          <div className="w-5 h-5 rounded-full flex-shrink-0 border-2" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
-          <span className="text-xs font-semibold" style={{color:prj?prj.color:'#9ca3af'}}>{prj?('📁 '+prj.name):'📥 Inbox'}</span>
-        </div>
-        <div className="px-4 pb-14">
-          <textarea value={t.text} onChange={e=>s('text',e.target.value)} className="w-full text-lg font-semibold text-stone-900 bg-transparent resize-none focus:outline-none leading-relaxed" style={{minHeight:48}} rows={2}/>
-          <textarea value={t.notes||''} onChange={e=>s('notes',e.target.value)} placeholder="Add notes…" className="w-full text-sm text-stone-500 bg-transparent resize-none focus:outline-none mt-1 leading-relaxed" rows={2}/>
-
-          <div className="border-t border-stone-100 mt-3 pt-3 space-y-3">
-            {/* Due date */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Due Date</p>
-              <div className="flex flex-wrap gap-1.5 mb-2">{qd.map(({l,v})=><Chip key={l} on={t.dueDate===v&&v!==null} click={()=>s('dueDate',v)}>{l}</Chip>)}</div>
-              <input type="date" value={t.dueDate||''} onChange={e=>s('dueDate',e.target.value||null)} className="w-full px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
-            </div>
-            {/* Priority */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Priority</p>
-              <div className="flex gap-2">
-                <button onClick={()=>s('priority',null)} className={'flex-1 py-2 rounded-xl text-xs font-bold border '+(t.priority?'bg-white text-stone-400 border-stone-200':'bg-stone-100 text-stone-600 border-stone-200')}>None</button>
-                {['P1','P2','P3','P4'].map(p=>(
-                  <button key={p} onClick={()=>s('priority',t.priority===p?null:p)}
-                    className={'flex-1 py-2 rounded-xl text-xs font-black border '+(t.priority===p?'text-white':'bg-white border-stone-200')}
-                    style={{background:t.priority===p?PRI_COLOR[p]:'',borderColor:t.priority===p?PRI_COLOR[p]:'',color:t.priority===p?'white':PRI_COLOR[p]}}>
-                    {p}
-                  </button>
-                ))}
+        <div className="px-5 pb-14">
+          <textarea value={t.text} onChange={e=>s('text',e.target.value)} className="w-full mt-3 p-4 text-sm text-stone-800 bg-stone-50 rounded-2xl border border-stone-200 resize-none focus:outline-none focus:ring-2 focus:ring-emerald-300 leading-relaxed" style={{minHeight:64}}/>
+          <Sec l="Type"><Row>{[['task','✅ Task'],['wish','✨ Wish']].map(([k,lb])=><Ch key={k} on={t.type===k} click={()=>s('type',k)}>{lb}</Ch>)}</Row></Sec>
+          <Sec l="Project (moves task out of inbox)">
+            <Row wrap><Ch on={!t.project} click={()=>s('project',null)}>None</Ch>{projects.map(p=><Ch key={p} on={t.project===p} click={()=>s('project',t.project===p?null:p)}>📁 {p}</Ch>)}</Row>
+          </Sec>
+          <Sec l="Due Date">
+            <Row wrap>{qd.map(({l,v})=><Ch key={l} on={t.dueDate===v&&v!==null} click={()=>s('dueDate',v)}>{l}</Ch>)}</Row>
+            <input type="date" value={t.dueDate||''} onChange={e=>s('dueDate',e.target.value||null)} className="mt-2.5 w-full px-4 py-2.5 text-sm border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-300 bg-white text-stone-700"/>
+          </Sec>
+          <Sec l="Recurrence">
+            <Row wrap><Ch on={!t.recurring} click={()=>s('recurring',null)}>None</Ch>{['daily','weekly','monthly','yearly'].map(r=><Ch key={r} on={t.recurring===r} click={()=>s('recurring',t.recurring===r?null:r)}>{RECUR[r]}</Ch>)}</Row>
+          </Sec>
+          <Sec l="Priority"><Row>{['P1','P2','P3','P4'].map(p=><button key={p} onClick={()=>s('priority',t.priority===p?null:p)} className={'px-3 py-2 rounded-xl text-xs font-black border flex items-center gap-1 '+(t.priority===p?PS[p]:'border-stone-200 text-stone-400 bg-white')}>{PF[p]} {p}</button>)}</Row></Sec>
+          <Sec l="Eisenhower"><div className="grid grid-cols-2 gap-2">{EIS.map(q=><button key={q.k} onClick={()=>s('eisenhower',t.eisenhower===q.k?null:q.k)} className={'px-3 py-2.5 rounded-xl text-left border-2 '+(t.eisenhower===q.k?q.b:'border-stone-100 bg-white')}><p className="text-xs font-black">{q.s}</p><p className="text-[10px] opacity-50">{q.l}</p></button>)}</div></Sec>
+          <Sec l="Goal Timeline"><Row wrap><Ch on={!t.goalType} click={()=>s('goalType',null)}>Not a Goal</Ch>{GOAL_TIERS.map(g=><Ch key={g.k} on={t.goalType===g.k} click={()=>s('goalType',t.goalType===g.k?null:g.k)}>{g.l}</Ch>)}</Row></Sec>
+          <Sec l="Labels">
+            <Row wrap>{labels.map(l=><Ch key={l} on={(t.labels||[]).includes(l)} click={()=>{const c=t.labels||[];s('labels',c.includes(l)?c.filter(x=>x!==l):[...c,l])}}># {l}</Ch>)}</Row>
+            <div className="flex gap-2 mt-2.5"><input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addL()} placeholder="New label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-white text-stone-700"/><button onClick={addL} className="px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black active:bg-emerald-100">Add</button></div>
+          </Sec>
+          <Sec l={'Sub-tasks ('+(t.subtasks||[]).length+')'}>
+            {(t.subtasks||[]).map((st,i)=>(
+              <div key={st.id} className="flex items-center gap-2 py-1.5 border-b border-stone-100">
+                <button onClick={()=>togSub(i)} className={'w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center '+(st.done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>{st.done&&<span style={{color:'white',fontSize:8,fontWeight:900}}>✓</span>}</button>
+                <span className={'flex-1 text-xs '+(st.done?'line-through text-stone-400':'text-stone-700')}>{st.text}</span>
+                <button onClick={()=>delSub(i)} className="text-stone-300 text-sm active:text-red-400">×</button>
               </div>
-            </div>
-            {/* Project */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Project</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.project} click={()=>s('project',null)}>📥 Inbox</Chip>
-                {projects.map(p=>(
-                  <button key={p.id||p.name} onClick={()=>s('project',t.project===p.name?null:p.name)}
-                    className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(t.project===p.name?'text-white':'bg-white text-stone-600 border-stone-200')}
-                    style={{background:t.project===p.name?p.color:'',borderColor:t.project===p.name?p.color:''}}>
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {/* Recurrence */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Recurrence</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.recurring} click={()=>s('recurring',null)}>None</Chip>
-                {Object.entries(RECUR_OPT).map(([k,l])=><Chip key={k} on={t.recurring===k} click={()=>s('recurring',t.recurring===k?null:k)}>{l}</Chip>)}
-              </div>
-            </div>
-            {/* Labels */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Labels</p>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {labels.map(l=><Chip key={l} on={(t.labels||[]).includes(l)} click={()=>{const c=t.labels||[];s('labels',c.includes(l)?c.filter(x=>x!==l):[...c,l])}}># {l}</Chip>)}
-              </div>
-              <div className="flex gap-2">
-                <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addL()} placeholder="Add label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
-                <button onClick={addL} className="px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black">Add</button>
-              </div>
-            </div>
-            {/* Goal */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Goal Timeline</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.goalType} click={()=>s('goalType',null)}>Not a Goal</Chip>
-                {GOAL_TIERS.map(g=><Chip key={g.k} on={t.goalType===g.k} click={()=>s('goalType',t.goalType===g.k?null:g.k)}>{g.l}</Chip>)}
-              </div>
-            </div>
-            {/* Sub-tasks */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Sub-tasks ({(t.subtasks||[]).length})</p>
-              {(t.subtasks||[]).map((st,i)=>(
-                <div key={st.id} className="flex items-center gap-2 py-1.5 border-b border-stone-100">
-                  <button onClick={()=>togSub(i)} className={'w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center '+(st.done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
-                    {st.done&&<svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                  </button>
-                  <span className={'flex-1 text-xs '+(st.done?'line-through text-stone-400':'text-stone-700')}>{st.text}</span>
-                  <button onClick={()=>delSub(i)} className="text-stone-300 text-sm active:text-red-400">×</button>
-                </div>
-              ))}
-              <div className="flex gap-2 mt-2">
-                <input value={newSub} onChange={e=>setNewSub(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSub()} placeholder="Add sub-task…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
-                <button onClick={addSub} className="px-3 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs font-bold">Add</button>
-              </div>
-            </div>
-            {/* Related */}
-            {related.length>0&&(
-              <div>
-                <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">🔗 Connected Thoughts ({related.length})</p>
-                {related.map(r=><div key={r.id} className="py-1.5 border-b border-stone-100 flex gap-2"><span className="flex-1 text-xs text-stone-600">{r.text}</span><span className="text-[10px] text-stone-300 flex-shrink-0">{fmtDate(r.dueDate)||'Inbox'}</span></div>)}
-              </div>
-            )}
-          </div>
-          {gcalOk&&t.dueDate&&<p className="text-xs text-center mt-4 text-emerald-600">{t.calendarEventId?'📆 Synced with Calendar':'📆 Will sync to Calendar on save'}</p>}
-          {/* Actions */}
+            ))}
+            <div className="flex gap-2 mt-2"><input value={newSub} onChange={e=>setNewSub(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSub()} placeholder="Add sub-task…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/><button onClick={addSub} className="px-3 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs font-bold active:bg-stone-200">Add</button></div>
+          </Sec>
+          {related.length>0&&<Sec l={'🔗 Connected thoughts ('+related.length+')'}>{related.map(r=><div key={r.id} className="py-1.5 border-b border-stone-100 flex gap-2"><span className="flex-1 text-[11px] text-stone-600">{r.text}</span><span className="text-[10px] text-stone-300 flex-shrink-0">{fmtDate(r.dueDate)||'Inbox'}</span></div>)}</Sec>}
+          {gcalOk&&t.dueDate&&<p className="text-xs text-center mt-3 text-emerald-600">{t.calendarEventId?'📆 In Calendar — updating on save':'📆 Will sync to Calendar on save'}</p>}
           <div className="flex gap-2 mt-5">
             <button onClick={()=>onSave(t)} className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700">Save</button>
-            <button onClick={onArch} className="px-4 py-4 bg-stone-100 text-stone-600 rounded-2xl text-lg">📦</button>
-            <button onClick={onDel}  className="px-4 py-4 bg-red-50 text-red-500 rounded-2xl text-lg">🗑️</button>
+            <button onClick={onArch} className="px-4 py-4 bg-stone-100 text-stone-600 rounded-2xl text-lg active:bg-stone-200">📦</button>
+            <button onClick={onDel}  className="px-4 py-4 bg-red-50 text-red-500 rounded-2xl text-lg active:bg-red-100">🗑️</button>
           </div>
         </div>
       </div>
@@ -668,97 +738,13 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
   );
 }
 
-/* ── Settings View ───────────────────────────────────── */
-function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onSync,syncing,labels,onSaveLbls,projects,onSavePrjs,taskCount,tasks}){
-  const [inp,setInp]=useState(cid);
-  const [newLbl,setNewLbl]=useState('');
-  const [newPrjName,setNewPrjName]=useState('');
-  const [newPrjColor,setNewPrjColor]=useState(PC[0]);
-  const [editPrj,setEditPrj]=useState(null);
-  const [editPrjName,setEditPrjName]=useState('');
-  const [editPrjColor,setEditPrjColor]=useState('');
-  const isHttps=location.protocol==='https:';
-  return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Settings</h2></div>
-      {!isHttps&&<div className="mx-4 mb-4 bg-amber-50 border border-amber-200 rounded-2xl p-3"><p className="text-xs font-bold text-amber-700">⚠️ Deploy to HTTPS for Google sync</p></div>}
-      {/* Sync */}
-      <div className="bg-white mx-0 mb-4 border-y border-stone-100">
-        <p className="px-4 pt-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Google Sync</p>
-        <div className="px-4 pb-4">
-          <div className="flex items-center gap-3 mb-3">
-            <span className={'text-xs font-bold px-2 py-1 rounded-full '+(driveOk?'bg-emerald-100 text-emerald-700':connected?'bg-amber-100 text-amber-700':'bg-stone-100 text-stone-500')}>{driveOk?'✓ Connected':'Not connected'}</span>
-            {driveOk&&<span className="text-xs text-stone-400">Drive + Calendar active</span>}
-          </div>
-          {!connected&&<React.Fragment>
-            <div className="bg-stone-50 rounded-xl p-3 mb-3 text-xs text-stone-600 space-y-1">
-              <p className="font-bold">Setup (once):</p>
-              <p>1. console.cloud.google.com → New project</p>
-              <p>2. Enable Google Calendar API</p>
-              <p>3. OAuth 2.0 Client ID (Web app) + add your URL</p>
-              <p>4. Paste Client ID below</p>
-            </div>
-            <input value={inp} onChange={e=>setInp(e.target.value)} placeholder="xxxx.apps.googleusercontent.com" className="w-full px-3 py-2.5 text-xs border border-stone-200 rounded-xl bg-stone-50 mb-2"/>
-            <button onClick={()=>setCid(inp.trim())} disabled={!inp.trim()||!isHttps} className="w-full py-2.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-bold disabled:opacity-40 mb-2">Save Client ID</button>
-            {cid&&isHttps&&<button onClick={onConnect} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black">🔐 Sign in with Google</button>}
-          </React.Fragment>}
-          {connected&&<React.Fragment>
-            <button onClick={onSync} disabled={syncing} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black mb-2">{syncing?'⏳ Syncing…':'🔄 Force sync'}</button>
-            <button onClick={onDisconnect} className="w-full py-2 bg-stone-50 text-stone-400 rounded-xl text-xs border border-stone-200">Disconnect</button>
-          </React.Fragment>}
-        </div>
-      </div>
-      {/* Projects */}
-      <div className="bg-white mx-0 mb-4 border-y border-stone-100">
-        <p className="px-4 pt-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Projects</p>
-        {editPrj&&(
-          <div className="mx-4 mb-3 bg-stone-50 rounded-2xl p-3">
-            <p className="text-xs font-bold text-stone-600 mb-2">Edit {editPrj.name}</p>
-            <input value={editPrjName} onChange={e=>setEditPrjName(e.target.value)} className="w-full px-3 py-2 text-sm border border-stone-200 rounded-xl mb-2 focus:outline-none bg-white"/>
-            <div className="flex gap-2 flex-wrap mb-2">{PC.map(c=><button key={c} onClick={()=>setEditPrjColor(c)} className={'w-7 h-7 rounded-full flex-shrink-0 '+(editPrjColor===c?'ring-2 ring-offset-1 ring-stone-700':'')} style={{background:c}}/>)}</div>
-            <div className="flex gap-2">
-              <button onClick={()=>{onSavePrjs(projects.map(p=>p.id===editPrj.id?{...p,name:editPrjName.trim()||p.name,color:editPrjColor}:p));setEditPrj(null)}} className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">Save</button>
-              <button onClick={()=>setEditPrj(null)} className="px-4 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs">Cancel</button>
-            </div>
-          </div>
-        )}
-        {projects.map(p=>(
-          <div key={p.id||p.name} className="flex items-center gap-3 px-4 py-3 border-b border-stone-50">
-            <span className="w-8 h-8 rounded-xl flex items-center justify-center text-white text-sm font-black flex-shrink-0" style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0]}</span>
-            <span className="flex-1 text-sm font-semibold text-stone-700">{p.name}</span>
-            <span className="text-xs text-stone-400 mr-2">{tasks.filter(t=>t.project===p.name||t.project===p.id).length} tasks</span>
-            <button onClick={()=>{setEditPrj(p);setEditPrjName(p.name);setEditPrjColor(p.color||PC[0])}} className="text-xs text-stone-400 font-semibold px-2 py-1 bg-stone-100 rounded-lg mr-1">Edit</button>
-            <button onClick={()=>onSavePrjs(projects.filter(x=>(x.id||x.name)!==(p.id||p.name)))} className="text-red-300 font-bold text-lg active:text-red-500">×</button>
-          </div>
-        ))}
-        <div className="px-4 py-3">
-          <input value={newPrjName} onChange={e=>setNewPrjName(e.target.value)} placeholder="New project name…" className="w-full px-3 py-2 text-sm border border-stone-200 rounded-xl mb-2 focus:outline-none bg-stone-50"/>
-          <div className="flex gap-2 flex-wrap mb-2">{PC.map(c=><button key={c} onClick={()=>setNewPrjColor(c)} className={'w-7 h-7 rounded-full flex-shrink-0 '+(newPrjColor===c?'ring-2 ring-offset-1 ring-stone-700':'')} style={{background:c}}/>)}</div>
-          <button onClick={()=>{if(newPrjName.trim()){onSavePrjs([...projects,{id:uid(),name:newPrjName.trim(),color:newPrjColor}]);setNewPrjName('')}}} disabled={!newPrjName.trim()} className="w-full py-2.5 bg-stone-800 text-white rounded-xl text-xs font-black disabled:opacity-40">Add Project</button>
-        </div>
-      </div>
-      {/* Labels */}
-      <div className="bg-white mx-0 mb-4 border-y border-stone-100">
-        <p className="px-4 pt-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Labels</p>
-        <div className="flex flex-wrap gap-2 px-4 pb-3">
-          {labels.map(l=><div key={l} className="flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-full pl-3 pr-1.5 py-1"><span className="text-xs font-semibold text-stone-600"># {l}</span><button onClick={()=>onSaveLbls(labels.filter(x=>x!==l))} className="text-stone-300 w-4 h-4 flex items-center justify-center" style={{fontSize:12}}>×</button></div>)}
-        </div>
-        <div className="flex gap-2 px-4 pb-4">
-          <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newLbl.trim()){onSaveLbls([...labels,newLbl.trim()]);setNewLbl('')}}} placeholder="Add label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
-          <button onClick={()=>{if(newLbl.trim()){onSaveLbls([...labels,newLbl.trim()]);setNewLbl('')}}} className="px-4 py-2 bg-stone-800 text-white rounded-xl text-xs font-black">Add</button>
-        </div>
-      </div>
-      <div className="bg-white mx-0 border-y border-stone-100 px-4 py-4">
-        <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-1">Stats</p>
-        <p className="text-sm text-stone-600">{taskCount} total tasks · {tasks.filter(t=>t.status==='completed').length} completed</p>
-        <p className="text-xs text-stone-400 mt-0.5">Data stored locally + Google Drive</p>
-      </div>
-    </div>
-  );
-}
-
-/* ── Tiny helpers ────────────────────────────────────── */
-function Chip({on,click,children}){return<button onClick={click} className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}>{children}</button>}
+/* ── Helpers ────────────────────────────────────────── */
+function LblPicker({labels,onConfirm,onClose}){const [sel,setSel]=useState([]);const tog=l=>setSel(s=>s.includes(l)?s.filter(x=>x!==l):[...s,l]);return<React.Fragment><div className="flex flex-wrap gap-2 mb-4">{labels.map(l=><Ch key={l} on={sel.includes(l)} click={()=>tog(l)}># {l}</Ch>)}</div><div className="flex gap-2"><button onClick={()=>onConfirm(sel)} disabled={!sel.length} className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm disabled:opacity-40">Apply {sel.length} label{sel.length!==1?'s':''}</button><button onClick={onClose} className="px-4 py-3 bg-stone-100 text-stone-600 rounded-xl text-sm">Cancel</button></div></React.Fragment>}
+function Empty({i,t,s}){return<div className="text-center py-14 px-8"><div style={{fontSize:44}} className="mb-3">{i}</div><p className="text-sm text-stone-500 font-bold">{t}</p>{s&&<p className="text-xs text-stone-400 mt-1">{s}</p>}</div>}
+function Sec({l,children}){return<div className="mt-5"><p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">{l}</p>{children}</div>}
+function Row({children,wrap}){return<div className={'flex gap-2'+(wrap?' flex-wrap':'')}>{children}</div>}
+function Ch({on,click,children}){return<button onClick={click} className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}>{children}</button>}
+function Fchip({on,click,children}){return<button onClick={click} className={'px-3 py-1 rounded-full text-xs font-bold flex-shrink-0 border '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-stone-50 text-stone-500 border-stone-200')}>{children}</button>}
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
