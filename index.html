@@ -132,6 +132,8 @@ const PRI_LABEL={P1:'🔴 P1 – Priority 1',P2:'🟠 P2 – Priority 2',P3:'�
 const EIS=[{k:'do',s:'Do Now',l:'Urgent + Important'},{k:'schedule',s:'Schedule',l:'Important, Not Urgent'},{k:'delegate',s:'Delegate',l:'Urgent, Not Important'},{k:'drop',s:'Drop',l:'Not Urgent/Important'}];
 const RECUR_OPT={daily:'Daily',weekly:'Weekly',monthly:'Monthly',yearly:'Yearly'};
 const GOAL_TIERS=[{k:'short',l:'🎯 Short-term',s:'< 3 months'},{k:'medium',l:'📈 Medium-term',s:'3–12 months'},{k:'long',l:'🌟 Long-term',s:'1–3 years'},{k:'vlong',l:'🚀 Very Long-term',s:'3+ years'}];
+const LBL_COLORS=['bg-sky-100 text-sky-700 border-sky-200','bg-amber-100 text-amber-700 border-amber-200','bg-pink-100 text-pink-700 border-pink-200','bg-purple-100 text-purple-700 border-purple-200','bg-teal-100 text-teal-700 border-teal-200','bg-rose-100 text-rose-700 border-rose-200'];
+const lblColor=(l,lbls)=>{const i=Math.max(0,lbls.indexOf(l))%LBL_COLORS.length;return LBL_COLORS[i]||LBL_COLORS[0]};
 
 /* ── App ────────────────────────────────────────────── */
 function App(){
@@ -285,6 +287,7 @@ function App(){
         {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects}/>}
         {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask}/>}
+        {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
         {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
         {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
@@ -494,7 +497,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
       {/* Other sections */}
       <div className="mt-4">
         <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">More</p>
-        {[{ico:'📅',l:'Scheduled',n:tasks.filter(t=>t.dueDate).length,tab:'scheduled'},{ico:'🌟',l:'Goals',n:goals.length,tab:'goals'},{ico:'✅',l:'Completed',n:doneTasks.length,tab:'done'},{ico:'⚙️',l:'Settings',n:null,tab:'settings'}].map(({ico,l,n,tab})=>(
+        {[{ico:'📅',l:'Scheduled',n:tasks.filter(t=>t.dueDate).length,tab:'scheduled'},{ico:'🕸️',l:'Web of Thoughts',n:null,tab:'web'},{ico:'🌟',l:'Goals',n:goals.length,tab:'goals'},{ico:'✅',l:'Completed',n:doneTasks.length,tab:'done'},{ico:'⚙️',l:'Settings',n:null,tab:'settings'}].map(({ico,l,n,tab})=>(
           <button key={tab} onClick={()=>onNav(tab)} className="w-full bg-white flex items-center gap-3 px-4 py-3.5 active:bg-stone-50">
             <span className="text-xl">{ico}</span>
             <span className="flex-1 text-left text-sm font-semibold text-stone-800">{l}</span>
@@ -503,6 +506,101 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/* ── 🕸️ Web of Thoughts View ────────────────────────── */
+function WebView({tasks,labels,projects,onEdit,onComplete}){
+  const [focus,setFocus]=useState(null); // 'p:<id>' or 'l:<label>'
+  const prjById=id=>projects.find(p=>p.id===id)||projects.find(p=>p.name===id);
+  const usedLbls=labels.filter(l=>tasks.some(t=>(t.labels||[]).includes(l)));
+  const usedPrjs=projects.filter(p=>tasks.some(t=>t.project===p.name||t.project===p.id));
+  const focusPrj=focus&&focus.startsWith('p:')?prjById(focus.slice(2)):null;
+  const focusTasks=focus?sortDP(tasks.filter(t=>{if(focus.startsWith('p:'))return t.project===focus.slice(2)||t.project===(focusPrj&&focusPrj.name);return(t.labels||[]).includes(focus.slice(2))})):[];
+
+  return(
+    <div className="pb-24">
+      <div className="px-4 pt-5 pb-4">
+        <h2 className="text-3xl font-black text-stone-900">🕸️ Web of Thoughts</h2>
+        <p className="text-sm text-stone-400 mt-0.5">Tap a cluster to explore connections between dumps</p>
+      </div>
+
+      {/* Focused cluster view */}
+      {focus&&(
+        <div className="px-4">
+          <button onClick={()=>setFocus(null)} className="text-xs text-emerald-600 font-black mb-3 flex items-center gap-1">← All clusters</button>
+          <div className="bg-emerald-50 border-2 border-emerald-200 rounded-2xl p-3 mb-3">
+            <p className="text-sm font-black text-emerald-800">{focus.startsWith('p:')?('📁 '+(focusPrj?focusPrj.name:focus.slice(2))):('# '+focus.slice(2))}</p>
+            <p className="text-xs text-emerald-600 mt-0.5">{focusTasks.length} thought{focusTasks.length!==1?'s':''} connected here</p>
+          </div>
+          {!focusTasks.length&&<div className="text-center py-10"><div style={{fontSize:40}}>🕸️</div><p className="text-sm font-bold text-stone-500 mt-2">No thoughts here yet</p></div>}
+          {focusTasks.map(t=>{
+            const tPrj=t.project?prjById(t.project):null;
+            const otherLbls=(t.labels||[]).filter(l=>focus!==('l:'+l));
+            const otherProjKey=tPrj&&focus!==('p:'+(tPrj.id||tPrj.name))?(tPrj.id||tPrj.name):null;
+            return(
+              <div key={t.id} className="bg-white rounded-2xl border border-stone-100 p-3 mb-2.5 shadow-sm" onClick={()=>onEdit(t)}>
+                <div className="flex items-start gap-2">
+                  <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className={'mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 '+(t.status==='completed'?'bg-emerald-500 border-emerald-500':'border-stone-300')}/>
+                  <p className={'text-sm leading-snug flex-1 '+(t.status==='completed'?'line-through text-stone-400':'text-stone-800')}>{t.text}</p>
+                </div>
+                {t.dueDate&&<p className="text-[10px] text-emerald-600 mt-1 ml-6">📅 {fmtDate(t.dueDate)}</p>}
+                {(otherLbls.length>0||otherProjKey)&&(
+                  <div className="flex gap-1.5 mt-2 flex-wrap items-center ml-6">
+                    <span className="text-[10px] text-stone-400">🔗</span>
+                    {otherProjKey&&<button onClick={ev=>{ev.stopPropagation();setFocus('p:'+otherProjKey)}} className="text-[10px] px-2 py-0.5 rounded-full font-semibold text-white" style={{background:tPrj.color||'#6366f1'}}>📁 {tPrj.name}</button>}
+                    {otherLbls.map(l=><button key={l} onClick={ev=>{ev.stopPropagation();setFocus('l:'+l)}} className={'text-[10px] px-2 py-0.5 rounded-full font-semibold border '+lblColor(l,usedLbls)}># {l}</button>)}
+                  </div>
+                )}
+                <p className="text-[9px] text-stone-300 mt-1.5 ml-6">Added {fmtCreated(t.createdAt)}</p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* All clusters overview */}
+      {!focus&&(
+        <div className="px-4">
+          {(usedPrjs.length===0&&usedLbls.length===0)&&<div className="text-center py-12"><div style={{fontSize:44}}>🕸️</div><p className="text-sm font-bold text-stone-500 mt-2">No labeled thoughts yet</p><p className="text-xs text-stone-400 mt-1">Add a #label or @project in Quick Add to see connections</p></div>}
+          {usedPrjs.map(p=>{
+            const key=p.id||p.name;
+            const pt=tasks.filter(t=>t.project===p.name||t.project===p.id);
+            const crossLinked=pt.filter(t=>(t.labels||[]).length>0);
+            return(
+              <div key={key} className="bg-white rounded-2xl border border-stone-100 p-3 mb-3 shadow-sm" onClick={()=>setFocus('p:'+key)}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-black" style={{color:p.color||'#6366f1'}}>📁 {p.name}</span>
+                  <span className="text-xs text-stone-400">{pt.length} task{pt.length!==1?'s':''} · {crossLinked.length} cross-labeled</span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {pt.slice(0,4).map(t=><span key={t.id} className="text-[10px] bg-stone-50 border border-stone-100 rounded-lg px-2 py-1 text-stone-700 truncate" style={{maxWidth:140}}>{t.text}</span>)}
+                  {pt.length>4&&<span className="text-[10px] text-stone-400 px-2 py-1">+{pt.length-4}</span>}
+                </div>
+                {crossLinked.length>0&&<p className="text-[10px] text-stone-400 mt-1.5">🔗 Also tagged: {[...new Set(crossLinked.flatMap(t=>t.labels||[]))].slice(0,4).map(l=>'#'+l).join(' ')}</p>}
+              </div>
+            );
+          })}
+          {usedLbls.map(l=>{
+            const lt=tasks.filter(t=>(t.labels||[]).includes(l));
+            const crossLinked=lt.filter(t=>(t.labels||[]).length>1||t.project);
+            return(
+              <div key={l} className="bg-white rounded-2xl border border-stone-100 p-3 mb-3 shadow-sm" onClick={()=>setFocus('l:'+l)}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-black text-stone-700"># {l}</span>
+                  <span className="text-xs text-stone-400">{lt.length} thought{lt.length!==1?'s':''} · {crossLinked.length} connected</span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {lt.slice(0,5).map(t=><span key={t.id} className={'text-[10px] rounded-lg px-2 py-1 border truncate '+lblColor(l,usedLbls)} style={{maxWidth:130}}>{t.text}</span>)}
+                  {lt.length>5&&<span className="text-[10px] text-stone-400 px-2 py-1">+{lt.length-5}</span>}
+                </div>
+                {crossLinked.length>0&&<p className="text-[10px] text-stone-400 mt-1.5">🔗 Shared with: {[...new Set(crossLinked.flatMap(t=>{const tp=t.project?prjById(t.project):null;return[...(t.labels||[]).filter(x=>x!==l),tp?('📁 '+tp.name):null].filter(Boolean)}))].slice(0,4).join(' ')}</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

@@ -1,18 +1,19 @@
 # Brain Dump v6 — Setup Guide
 
-This is the merged build: v5's architecture (stable Drive sync, Today/Browse/Search/Goals views, natural-language Quick Add) combined with v4's bulk multi-select and live `#tag` autocomplete, plus one bug fix.
+This is the merged build: v5's architecture (stable Drive sync, Today/Browse/Search/Goals views, natural-language Quick Add) combined with v4's bulk multi-select, live `#tag` autocomplete, and the Web of Thoughts cluster view — plus one bug fix.
 
 ## What changed from v5 → v6
 - **Fixed a bug**: the Scheduled tab's sub-task checkboxes called an undefined function (`toggleSubTask`) and would have crashed that screen — now wired correctly.
 - **Bulk select restored** (from v4): tap **Select** in the top-right of Inbox or Scheduled to multi-select tasks, then Copy / bulk-Label / Archive / Delete from the action bar at the bottom.
 - **Live `#tag` autocomplete restored** (from v4): while typing in Quick Add, typing `#` followed by a few letters shows matching existing labels as tappable suggestions, instead of only resolving tags after you finish typing.
+- **🕸️ Web of Thoughts restored** (from v4, this had quietly disappeared in v5's redesign): a dedicated view under Browse → Web of Thoughts that shows every project and label as a "cluster" of related dumps. Tap a cluster to see all the thoughts tagged with it; each thought shows 🔗 chips for any other labels/project it also carries, so you can hop from one connected thought to the next — a lightweight Obsidian/Notion-style web of your labeled dumps, separate from the task edit form.
 - Service worker cache bumped to `gtd-v6` so installed devices pick up the new files instead of serving stale cached ones.
 
 ## What v6 keeps from v5 (the stronger base)
 - Stable Google Drive filename (`gtd_braindump.json`) with automatic recovery from older version files (`gtd_v5.json`, `gtd_v4.json`, etc.) — upgrading the app won't silently lose your data.
 - Toast notification when your Google sign-in expires, so sync failures aren't silent.
 - Natural-language Quick Add: type `check shuttering @C3 tomorrow p1 #urgent` and it auto-fills project, date, priority, and label.
-- Today / Inbox / Browse / Project / Label / Search / Scheduled / Goals / Done / Settings views.
+- Today / Inbox / Browse / Project / Label / Search / Scheduled / Goals / Done / Settings / Web of Thoughts views.
 - JSON Export/Import backup in Settings, independent of Google Drive.
 
 ---
@@ -89,8 +90,9 @@ If you see "Signed in, but Drive isn't responding," it usually means the Drive A
 
 - **🏠 Today** — Overdue, due today, and the next 7 days, at a glance
 - **📥 Inbox** — Tasks not yet assigned to a project. Tap **Select** to multi-select for bulk Copy / Label / Archive / Delete
-- **📁 Browse** — Drill into Projects, Labels, Scheduled, Goals, Completed
+- **📁 Browse** — Drill into Projects, Labels, Scheduled, Web of Thoughts, Goals, Completed
 - **📅 Scheduled** — Every dated task grouped by Overdue / Today / Tomorrow / This Week / Later. Also supports **Select** for bulk actions
+- **🕸️ Web of Thoughts** — Reachable via Browse. Shows projects and labels as connection clusters; tap one to see every thought tagged with it, then tap a 🔗 chip on any thought to jump to another cluster it's also connected to
 - **🔍 Search** — Type 2+ characters to search across all tasks
 - **🌟 Goals** — Tasks tagged with a Goal Timeline (Short/Medium/Long/Very Long-term)
 - **✅ Done** — Completed tasks (undo available) and Archive (restore available)
@@ -108,6 +110,8 @@ If you see "Signed in, but Drive isn't responding," it usually means the Drive A
 - 📦 — archive all selected
 - 🗑️ — delete all selected (also removes their Calendar events)
 
+**Web of Thoughts** — every project and every label that's currently in use on an active task becomes a tappable cluster card showing how many tasks are in it and how many are "cross-linked" (tagged with more than one label, or a label + a project). Tap into a cluster to see the actual thoughts, and tap any 🔗 chip on a thought to jump straight to another cluster it shares a tag with — useful for following a chain of related ideas (e.g. all dumps tagged `#steel` across both the `C3` and `DS-yard` projects) without manually searching.
+
 **Priorities:** P1 (critical) → P2 (high) → P3 (medium) → P4 (low). Overdue tasks without a manual priority auto-escalate (shown with ⬆) the longer they sit.
 
 **Recurring tasks:** Daily / Weekly / Monthly / Yearly — completing one auto-creates the next occurrence.
@@ -124,6 +128,8 @@ These were flagged when comparing the two source versions and are still open —
 2. **No live/real-time sync.** Sync only happens on app load / reconnect, not continuously — two devices open at once won't see each other's changes until one reloads.
 3. **No pending-sync indicator.** If a Drive/Calendar call fails silently (e.g., spotty site network), there's no on-screen "not yet synced" badge.
 4. **Recurring monthly tasks** from month-end dates (e.g., the 31st) may shift unexpectedly in shorter months — standard JS date-rollover behavior, not explicitly handled.
+5. **Subprojects (nested projects) and live `@project` autocomplete in Quick Add** were designed but not finished — not present in this build.
+6. **No vision board** — was mentioned once but never fully specified; not built.
 
 A reasonable next step if these matter to you: add a manual "Drive has newer data — keep local or use Drive?" prompt when both sides changed since last sync, and a small sync-status dot in the header.
 
@@ -132,9 +138,10 @@ A reasonable next step if these matter to you: add a manual "Drive has newer dat
 ## Files in this package
 
 ```
-index.html    — The full app (merged v6 build)
+index.html    — The full app (merged v6 build, Web of Thoughts restored)
 manifest.json — Makes it installable as an Android PWA
 sw.js         — Service worker (offline caching, cache version gtd-v6)
 icon.svg      — App icon
 README.md     — This file
 ```
+
