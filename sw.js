@@ -1,4 +1,4 @@
-const CACHE = 'gtd-v2';
+const CACHE = 'gtd-v6';
 const PRECACHE = ['./index.html', './styles.css', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', e => {

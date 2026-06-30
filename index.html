@@ -154,6 +154,9 @@ function App(){
   const [syncing,setSyncing]=useState(false);
   const [toast,setToast]=useState('');
   const [ready,setReady]=useState(false);
+  const [selectMode,setSelectMode]=useState(false);
+  const [selected,setSelected]=useState([]);
+  const [showLblAssign,setShowLblAssign]=useState(false);
 
   // Init
   useEffect(()=>{
@@ -243,6 +246,14 @@ function App(){
   const exportJSON=()=>{const d={tasks,labels,projects,exportedAt:new Date().toISOString()};const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='braindump-backup-'+todayISO()+'.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);showToast('💾 Backup downloaded!')};
   const importJSON=file=>{if(!file)return;const r=new FileReader();r.onload=e=>{try{const d=JSON.parse(e.target.result);if(d.tasks&&Array.isArray(d.tasks)){persist(d.tasks);if(d.labels)persistLbls(d.labels);if(d.projects)persistPrjs(d.projects);showToast('✅ Imported '+d.tasks.length+' tasks!')}else showToast('❌ Invalid backup file')}catch{showToast('❌ Could not read file')}};r.readAsText(file)};
 
+  // Multi-select bulk operations
+  const toggleSel=id=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+  const exitSelect=()=>{setSelectMode(false);setSelected([])};
+  const copySelected=()=>{const texts=selected.map(id=>tasks.find(t=>t.id===id)).filter(Boolean).map(t=>'• '+t.text);if(navigator.clipboard)navigator.clipboard.writeText(texts.join('\n')).then(()=>showToast('📋 Copied '+texts.length+' tasks')).catch(()=>showToast('❌ Copy failed'));exitSelect()};
+  const assignLabels=lbls=>{persist(tasks.map(t=>!selected.includes(t.id)?t:{...t,labels:[...new Set([...(t.labels||[]),...lbls])]}));setShowLblAssign(false);exitSelect();showToast('🏷️ Labels applied to '+selected.length+' tasks')};
+  const archiveSel=()=>{persist(tasks.map(t=>selected.includes(t.id)?{...t,status:'archived'}:t));exitSelect()};
+  const deleteSel=()=>{selected.forEach(id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)gcal.del(t.calendarEventId)});persist(tasks.filter(t=>!selected.includes(t.id)));exitSelect()};
+
   if(!ready)return<div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:'#a8a29e'}}><span style={{fontSize:56}}>🧠</span><span style={{fontSize:14,fontWeight:600}}>Loading…</span></div>;
 
   // Computed
@@ -260,8 +271,10 @@ function App(){
   const searchResults=searchQ.length>=2?tasks.filter(t=>t.status!=='archived'&&t.text.toLowerCase().includes(searchQ.toLowerCase())).slice(0,40):[];
   const inboxN=inbox.length;
   const todayN=todayTasks.length+overdueTasks.length;
+  const scheduledAll=sortDP(active.filter(t=>t.dueDate));
+  const selPool=(view.tab==='inbox'?inbox:view.tab==='scheduled'?scheduledAll:[]).map(t=>t.id);
 
-  const nav=(tab,extra={})=>setView({tab,...extra});
+  const nav=(tab,extra={})=>{setView({tab,...extra});exitSelect()};
 
   return(
     <div style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',background:'#F7F7F5'}}>
@@ -270,20 +283,44 @@ function App(){
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
         {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects}/>}
-        {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
+        {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask}/>}
         {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
         {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
-        {view.tab==='scheduled'&&<ScheduledView tasks={sortDP(active.filter(t=>t.dueDate))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSubTask} projects={projects} labels={labels}/>}
+        {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} labels={labels} projects={projects}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
         {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
       </div>
 
+      {/* Label assign modal (bulk) */}
+      {showLblAssign&&(
+        <div className="fixed inset-0 z-50 flex items-end">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>setShowLblAssign(false)}/>
+          <div className="relative bg-white rounded-t-3xl p-5 w-full">
+            <p className="text-sm font-black text-stone-800 mb-3">🏷️ Assign labels to {selected.length} tasks</p>
+            <LblPicker labels={labels} onConfirm={assignLabels} onClose={()=>setShowLblAssign(false)}/>
+          </div>
+        </div>
+      )}
+
       {/* FAB */}
-      {!showQuickAdd&&(
+      {!showQuickAdd&&!selectMode&&(
         <button onClick={()=>setShowQuickAdd(true)} className="fixed z-30 bg-emerald-600 text-white shadow-2xl active:bg-emerald-700 flex items-center justify-center" style={{right:20,bottom:80,width:56,height:56,borderRadius:'50%',fontSize:28,lineHeight:1}}>+</button>
+      )}
+
+      {/* Bulk select action bar */}
+      {selectMode&&(
+        <div className="bg-white border-t border-stone-100 px-3 py-2 flex gap-2 items-center flex-shrink-0" style={{overflowX:'auto',scrollbarWidth:'none'}}>
+          <span className="text-xs font-bold text-stone-500 flex-shrink-0">{selected.length} sel</span>
+          <button onClick={()=>setSelected([...selPool])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">All</button>
+          <button onClick={()=>setSelected([])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">None</button>
+          <button onClick={copySelected} disabled={!selected.length} className="text-xs bg-emerald-100 text-emerald-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">📋 Copy</button>
+          <button onClick={()=>selected.length&&setShowLblAssign(true)} disabled={!selected.length} className="text-xs bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">🏷️ Label</button>
+          <button onClick={archiveSel} disabled={!selected.length} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0 disabled:opacity-40">📦</button>
+          <button onClick={deleteSel} disabled={!selected.length} className="text-xs bg-red-50 text-red-500 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0 disabled:opacity-40">🗑️</button>
+        </div>
       )}
 
       {/* Bottom nav */}
@@ -306,7 +343,7 @@ function App(){
 }
 
 /* ── Task Row ────────────────────────────────────────── */
-function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject}){
+function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject,selectMode,isSelected,onSelect}){
   const [expanded,setExpanded]=useState(false);
   const done=task.status==='completed';
   const ep=effPri(task);
@@ -315,16 +352,23 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
   const doneSubs=subs.filter(s=>s.done).length;
   const prj=task.project?projects.find(p=>p.name===task.project||p.id===task.project):null;
   const circleColor=ep?PRI_COLOR[ep]:'#d1d5db';
+  const handleRowClick=()=>selectMode?onSelect&&onSelect(task.id):!done&&onEdit(task);
 
   return(
-    <div className={'bg-white '+(done?'opacity-60':'')}>
-      <div className="flex gap-3 px-4 py-3" onClick={()=>!done&&onEdit(task)}>
-        {/* Priority circle */}
+    <div className={'bg-white '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')}>
+      <div className="flex gap-3 px-4 py-3" onClick={handleRowClick}>
+        {/* Priority circle / select checkbox */}
+        {selectMode?(
+          <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+            {isSelected&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+          </div>
+        ):(
         <button onClick={ev=>{ev.stopPropagation();onComplete(task.id)}}
           className="mt-0.5 w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center transition-all"
           style={{border:'2px solid '+circleColor,background:done?circleColor:'transparent'}}>
           {done&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
         </button>
+        )}
         <div className="flex-1 min-w-0">
           <p className={'text-sm leading-snug text-stone-800 '+(done?'line-through text-stone-400':'')}>{task.text}</p>
           <div className="flex flex-wrap items-center gap-2 mt-1">
@@ -400,12 +444,15 @@ function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,project
 }
 
 /* ── Inbox View ─────────────────────────────────────── */
-function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects}){
+function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects,selectMode,setSelectMode,selected,onSelect}){
   return(
     <div className="pb-24">
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Inbox</h2><p className="text-sm text-stone-400 mt-0.5">Tasks without a project — assign to triage</p></div>
+      <div className="px-4 pt-5 pb-4 flex items-center justify-between">
+        <div><h2 className="text-3xl font-black text-stone-900">Inbox</h2><p className="text-sm text-stone-400 mt-0.5">Tasks without a project — assign to triage</p></div>
+        {tasks.length>0&&<button onClick={()=>setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border flex-shrink-0 '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
+      </div>
       {!tasks.length&&<div className="text-center py-12"><div style={{fontSize:48}}>📭</div><p className="text-base font-bold text-stone-600 mt-3">Inbox zero!</p><p className="text-sm text-stone-400 mt-1">Tap + to add tasks</p></div>}
-      {tasks.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects}/>)}
+      {tasks.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}
     </div>
   );
 }
@@ -524,7 +571,7 @@ function SearchView({q,setQ,results,onComplete,onEdit,onToggleSub,labels,project
 }
 
 /* ── Scheduled View ──────────────────────────────────── */
-function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels}){
+function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,selectMode,setSelectMode,selected,onSelect}){
   const td=todayISO(),tm=addDays(1);
   const grps=[
     {l:'🔴 Overdue',ts:tasks.filter(t=>t.dueDate<td)},
@@ -535,9 +582,12 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels}){
   ].filter(g=>g.ts.length);
   return(
     <div className="pb-24">
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Scheduled</h2><p className="text-sm text-stone-400 mt-0.5">All tasks with a due date</p></div>
+      <div className="px-4 pt-5 pb-4 flex items-center justify-between">
+        <div><h2 className="text-3xl font-black text-stone-900">Scheduled</h2><p className="text-sm text-stone-400 mt-0.5">All tasks with a due date</p></div>
+        {tasks.length>0&&<button onClick={()=>setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border flex-shrink-0 '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
+      </div>
       {!grps.length&&<div className="text-center py-12"><div style={{fontSize:44}}>🗒️</div><p className="text-sm font-bold text-stone-500 mt-2">No scheduled tasks</p><p className="text-xs text-stone-400 mt-1">Add a due date to any task to see it here</p></div>}
-      {grps.map(g=><div key={g.l}><div className="px-4 py-2"><span className="text-xs font-black text-stone-400 uppercase tracking-widest">{g.l}</span></div>{g.ts.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject/>)}</div>)}
+      {grps.map(g=><div key={g.l}><div className="px-4 py-2"><span className="text-xs font-black text-stone-400 uppercase tracking-widest">{g.l}</span></div>{g.ts.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}</div>)}
     </div>
   );
 }
@@ -602,9 +652,17 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
 function QuickAdd({onAdd,onClose,projects,labels}){
   const [text,setText]=useState('');
   const [parsed,setParsed]=useState({text:'',dueDate:null,priority:null,labels:[],project:null});
+  const [suggs,setSuggs]=useState([]);
   const ref=useRef(null);
   useEffect(()=>{ref.current&&ref.current.focus()},[]);
-  const handleChange=v=>{setText(v);setParsed(parseNL(v,projects,labels))};
+  const handleChange=v=>{
+    setText(v);setParsed(parseNL(v,projects,labels));
+    // Live #tag suggestion as user types
+    const hm=v.match(/#([a-zA-Z0-9_]*)$/);
+    if(hm){const partial=hm[1].toLowerCase();setSuggs(labels.filter(l=>l.toLowerCase().startsWith(partial)).slice(0,5))}
+    else setSuggs([]);
+  };
+  const applySugg=s=>{setText(prev=>{const nv=prev.replace(/#([a-zA-Z0-9_]*)$/,'#'+s+' ');setParsed(parseNL(nv,projects,labels));return nv});setSuggs([])};
   const handleAdd=()=>{
     if(!text.trim())return;
     const p=parseNL(text,projects,labels);
@@ -619,6 +677,12 @@ function QuickAdd({onAdd,onClose,projects,labels}){
         <div className="flex justify-center mb-3"><div className="w-10 h-1 bg-stone-200 rounded-full"/></div>
         <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">Quick Add</p>
         <input ref={ref} value={text} onChange={e=>handleChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdd()} placeholder="Task name… tomorrow @Project #label p1" className="w-full text-base text-stone-900 bg-transparent border-b-2 border-stone-200 focus:border-emerald-500 focus:outline-none pb-2 mb-3 transition-colors"/>
+        {suggs.length>0&&(
+          <div className="flex gap-1.5 flex-wrap mb-3 p-2 bg-amber-50 rounded-xl border border-amber-200">
+            <span className="text-[10px] text-amber-600 w-full font-semibold">💡 Tap to complete tag:</span>
+            {suggs.map(s=><button key={s} onClick={()=>applySugg(s)} className="text-xs bg-white text-amber-700 border border-amber-200 px-2 py-1 rounded-lg font-semibold">#{s}</button>)}
+          </div>
+        )}
         {/* NLP preview */}
         {hasMeta&&(
           <div className="flex flex-wrap gap-2 mb-3 p-3 bg-stone-50 rounded-xl">
@@ -872,6 +936,21 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
         <p className="text-xs text-stone-400 mt-0.5">Data: device localStorage + Google Drive</p>
       </div>
     </div>
+  );
+}
+
+/* ── Bulk Label Picker ───────────────────────────────── */
+function LblPicker({labels,onConfirm,onClose}){
+  const [sel,setSel]=useState([]);
+  const tog=l=>setSel(s=>s.includes(l)?s.filter(x=>x!==l):[...s,l]);
+  return(
+    <React.Fragment>
+      <div className="flex flex-wrap gap-2 mb-4">{labels.map(l=><Chip key={l} on={sel.includes(l)} click={()=>tog(l)}># {l}</Chip>)}</div>
+      <div className="flex gap-2">
+        <button onClick={()=>onConfirm(sel)} disabled={!sel.length} className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm disabled:opacity-40">Apply {sel.length} label{sel.length!==1?'s':''}</button>
+        <button onClick={onClose} className="px-4 py-3 bg-stone-100 text-stone-600 rounded-xl text-sm">Cancel</button>
+      </div>
+    </React.Fragment>
   );
 }
 
