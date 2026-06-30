@@ -72,18 +72,21 @@ const GCAL='https://www.googleapis.com/calendar/v3';
 const DAPI='https://www.googleapis.com/drive/v3';
 
 let _tc=null,_tok=null;
+let _onAuthFail=null;
 const gcal={
+  setAuthFailHandler(fn){_onAuthFail=fn},
   init(cid,onOk){if(!window.google?.accounts?.oauth2)return false;_tc=window.google.accounts.oauth2.initTokenClient({client_id:cid,scope:'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata',callback:r=>{if(r.access_token){_tok=r.access_token;ls.set('tok',_tok);onOk()}}});const s=ls.get('tok');if(s){_tok=s;onOk()}return true},
-  connect(){_tc&&_tc.requestAccessToken({prompt:''})},
+  connect(force){_tc&&_tc.requestAccessToken({prompt:force?'consent':''})},
+  invalidate(){_tok=null;ls.set('tok',null);if(_onAuthFail)_onAuthFail()},
   _h(){return{'Authorization':'Bearer '+_tok,'Content-Type':'application/json'}},
-  async create(t){if(!_tok||!t.dueDate)return null;try{const r=await fetch(GCAL+'/calendars/primary/events',{method:'POST',headers:gcal._h(),body:JSON.stringify({summary:t.text,start:{date:t.dueDate},end:{date:t.dueDate},description:[t.priority&&('P: '+t.priority),(t.labels&&t.labels.length)&&('Labels: '+t.labels.join(', ')),t.project&&('Project: '+t.project)].filter(Boolean).join('\n')})});if(r.status===401){_tok=null;ls.set('tok',null);return null}return(await r.json()).id||null}catch{return null}},
+  async create(t){if(!_tok||!t.dueDate)return null;try{const r=await fetch(GCAL+'/calendars/primary/events',{method:'POST',headers:gcal._h(),body:JSON.stringify({summary:t.text,start:{date:t.dueDate},end:{date:t.dueDate},description:[t.priority&&('P: '+t.priority),(t.labels&&t.labels.length)&&('Labels: '+t.labels.join(', ')),t.project&&('Project: '+t.project)].filter(Boolean).join('\n')})});if(r.status===401){gcal.invalidate();return null}return(await r.json()).id||null}catch{return null}},
   async del(eid){if(!_tok||!eid)return;try{await fetch(GCAL+'/calendars/primary/events/'+eid,{method:'DELETE',headers:gcal._h()})}catch{}}
 };
 // FIXED: stable file name + searches old version files for recovery
 const STABLE_FILE='gtd_braindump.json';
 const OLD_FILES=['gtd_v5.json','gtd_v4.json','gtd_v3.json','gtd_v2.json'];
 const drv={
-  async _search(fname){try{const r=await fetch(DAPI+'/files?spaces=appDataFolder&q=name%3D%27'+fname+'%27&fields=files(id)',{headers:gcal._h()});if(!r.ok)return null;const d=await r.json();return(d.files&&d.files[0]&&d.files[0].id)||null}catch{return null}},
+  async _search(fname){try{const r=await fetch(DAPI+'/files?spaces=appDataFolder&q=name%3D%27'+fname+'%27&fields=files(id)',{headers:gcal._h()});if(r.status===401){gcal.invalidate();return null}if(!r.ok)return null;const d=await r.json();return(d.files&&d.files[0]&&d.files[0].id)||null}catch{return null}},
   async _read(fid){try{const r=await fetch(DAPI+'/files/'+fid+'?alt=media',{headers:gcal._h()});if(!r.ok)return null;return await r.json()}catch{return null}},
   // Save always to stable file name
   async save(data){
@@ -98,7 +101,7 @@ const drv={
       const url='https://www.googleapis.com/upload/drive/v3/files'+(fid?'/'+fid:'')+'?uploadType=multipart';
       const body='--'+bnd+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+meta+'\r\n--'+bnd+'\r\nContent-Type: application/json\r\n\r\n'+content+'\r\n--'+bnd+'--';
       const r=await fetch(url,{method:fid?'PATCH':'POST',headers:{'Authorization':'Bearer '+_tok,'Content-Type':'multipart/related; boundary='+bnd},body});
-      if(r.status===401){_tok=null;ls.set('tok',null);return false}
+      if(r.status===401){gcal.invalidate();return false}
       if(r.ok){const d=await r.json();if(d.id){ls.set('drv_stable_fid',d.id)};ls.set('tasks_ts',ts)}
       return r.ok;
     }catch{return false}
@@ -160,6 +163,10 @@ function App(){
   },[]);
   useEffect(()=>{
     if(!gcalCid)return;
+    gcal.setAuthFailHandler(()=>{
+      setGcalOk(false);setDriveOk(false);
+      showToast('⚠️ Google session expired — please reconnect in Settings');
+    });
     const tryInit=()=>{const ok=gcal.init(gcalCid,()=>setGcalOk(true));if(!ok)setTimeout(tryInit,500)};
     if(window.google?.accounts?.oauth2)tryInit();
     else{const id=setInterval(()=>{if(window.google?.accounts?.oauth2){clearInterval(id);tryInit()}},400);return()=>clearInterval(id)}
@@ -271,7 +278,7 @@ function App(){
         {view.tab==='scheduled'&&<ScheduledView tasks={sortDP(active.filter(t=>t.dueDate))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSubTask} projects={projects} labels={labels}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} labels={labels} projects={projects}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
-        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect()} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
+        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
       </div>
 
       {/* FAB */}
@@ -440,7 +447,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
       {/* Other sections */}
       <div className="mt-4">
         <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">More</p>
-        {[{ico:'📅',l:'Scheduled',n:active.filter(t=>t.dueDate).length,tab:'scheduled'},{ico:'🌟',l:'Goals',n:goals.length,tab:'goals'},{ico:'✅',l:'Completed',n:doneTasks.length,tab:'done'},{ico:'⚙️',l:'Settings',n:null,tab:'settings'}].map(({ico,l,n,tab})=>(
+        {[{ico:'📅',l:'Scheduled',n:tasks.filter(t=>t.dueDate).length,tab:'scheduled'},{ico:'🌟',l:'Goals',n:goals.length,tab:'goals'},{ico:'✅',l:'Completed',n:doneTasks.length,tab:'done'},{ico:'⚙️',l:'Settings',n:null,tab:'settings'}].map(({ico,l,n,tab})=>(
           <button key={tab} onClick={()=>onNav(tab)} className="w-full bg-white flex items-center gap-3 px-4 py-3.5 active:bg-stone-50">
             <span className="text-xl">{ico}</span>
             <span className="flex-1 text-left text-sm font-semibold text-stone-800">{l}</span>
@@ -793,14 +800,12 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
           {connected&&!driveOk&&(
           <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-3 text-xs text-red-700 space-y-1.5">
             <p className="font-bold">⚠️ Signed in, but Drive isn't responding.</p>
-            <p>This usually means the <strong>Google Drive API</strong> isn't enabled (separate from Calendar API).</p>
-            <p className="font-bold mt-1">Fix:</p>
-            <p>1. console.cloud.google.com → your project</p>
-            <p>2. APIs & Services → Library</p>
-            <p>3. Search "Google Drive API" → Enable</p>
-            <p>4. Tap Retry below</p>
+            <p>Two common causes:</p>
+            <p><strong>A)</strong> Google Drive API isn't enabled in your project — console.cloud.google.com → APIs & Services → Library → search "Google Drive API" → Enable.</p>
+            <p><strong>B)</strong> Your saved sign-in is from before Drive access was added, so it's missing permission. Tap <strong>Reconnect</strong> below to sign in fresh.</p>
           </div>
         )}
+        {connected&&!driveOk&&<button onClick={onConnect} className="w-full py-3 bg-amber-500 text-white rounded-xl text-xs font-black mb-2">🔁 Reconnect Google (grant Drive access)</button>}
         {connected&&<React.Fragment>
             <button onClick={onRetryDrive} className="w-full py-3 bg-blue-600 text-white rounded-xl text-xs font-black mb-2">🔄 Retry Drive connection</button>
             <button onClick={onSync} disabled={syncing} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black mb-2">{syncing?'⏳ Syncing…':'🔄 Force sync Calendar'}</button>
