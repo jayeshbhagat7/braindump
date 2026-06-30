@@ -164,49 +164,40 @@ function App(){
     if(window.google?.accounts?.oauth2)tryInit();
     else{const id=setInterval(()=>{if(window.google?.accounts?.oauth2){clearInterval(id);tryInit()}},400);return()=>clearInterval(id)}
   },[gcalCid]);
-  useEffect(()=>{
-    if(!gcalOk)return;
-    (async()=>{
-      try{
-        const driveData=await drv.load();
-        const localTasks=ls.get('tasks',[]);
-        const localTs=ls.get('tasks_ts',0);
-        if(!driveData||!driveData.tasks){
-          // No Drive data found anywhere: upload local
-          const ok=await drv.save({tasks:localTasks,labels,projects,_ts:Date.now()});
-          setDriveOk(ok);
-          if(ok)showToast('☁️ '+localTasks.length+' tasks saved to Drive');
-          else showToast('⚠️ Drive save failed — working offline');
-          return;
-        }
-        setDriveOk(true);
-        const driveTasks=driveData.tasks||[];
-        const driveTs=driveData._ts||0;
-        // SAFE RULE: never replace MORE tasks with FEWER tasks
-        if(localTasks.length===0&&driveTasks.length>0){
-          // Local empty, Drive has data → RESTORE
-          setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
-          if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
-          if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
-          showToast('📥 Restored '+driveTasks.length+' tasks from Drive!');
-          // Migrate to stable file if found in old file
-          if(driveData._foundIn&&driveData._foundIn!==STABLE_FILE){drv.save({tasks:driveTasks,labels,projects})}
-        } else if(driveTs>localTs&&driveTasks.length>=localTasks.length){
-          // Drive newer AND has at least as many tasks → load Drive
-          setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
-          if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
-          if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
-          showToast('📥 '+driveTasks.length+' tasks synced from Drive');
-        } else {
-          // Local is newer or has more tasks → upload to Drive (also migrates old files)
-          const ok=await drv.save({tasks:localTasks,labels,projects,_ts:Math.max(localTs,Date.now())});
-          if(ok){
-            if(driveData._foundIn&&driveData._foundIn!==STABLE_FILE)showToast('☁️ '+localTasks.length+' tasks migrated to Drive');
-          }
-        }
-      }catch(e){showToast('⚠️ Sync error — tasks saved locally')}
-    })();
-  },[gcalOk]);
+  const runDriveSync=useCallback(async()=>{
+    try{
+      const driveData=await drv.load();
+      const localTasks=ls.get('tasks',[]);
+      const localTs=ls.get('tasks_ts',0);
+      if(!driveData||!driveData.tasks){
+        const ok=await drv.save({tasks:localTasks,labels,projects,_ts:Date.now()});
+        setDriveOk(ok);
+        if(ok)showToast('☁️ '+localTasks.length+' tasks saved to Drive');
+        else showToast('⚠️ Drive API may not be enabled — see Settings');
+        return;
+      }
+      setDriveOk(true);
+      const driveTasks=driveData.tasks||[];
+      const driveTs=driveData._ts||0;
+      if(localTasks.length===0&&driveTasks.length>0){
+        setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
+        if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
+        if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
+        showToast('📥 Restored '+driveTasks.length+' tasks from Drive!');
+        if(driveData._foundIn&&driveData._foundIn!==STABLE_FILE){drv.save({tasks:driveTasks,labels,projects})}
+      } else if(driveTs>localTs&&driveTasks.length>=localTasks.length){
+        setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
+        if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
+        if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
+        showToast('📥 '+driveTasks.length+' tasks synced from Drive');
+      } else {
+        const ok=await drv.save({tasks:localTasks,labels,projects,_ts:Math.max(localTs,Date.now())});
+        if(ok&&driveData._foundIn&&driveData._foundIn!==STABLE_FILE)showToast('☁️ '+localTasks.length+' tasks migrated to Drive');
+      }
+    }catch(e){setDriveOk(false);showToast('⚠️ Drive sync error — working offline')}
+  },[labels,projects]);
+
+  useEffect(()=>{if(!gcalOk)return;runDriveSync()},[gcalOk]);
 
   const showToast=(m,ms=3000)=>{setToast(m);setTimeout(()=>setToast(''),ms)};
   const persist=useCallback((t,l,p)=>{const fl=l||labels,fp=p||projects;setTasks(t);ls.set('tasks',t);const ts=Date.now();ls.set('tasks_ts',ts);if(gcalOk&&driveOk)drv.save({tasks:t,labels:fl,projects:fp,_ts:ts}).catch(()=>{});},[gcalOk,driveOk,labels,projects]);
@@ -280,7 +271,7 @@ function App(){
         {view.tab==='scheduled'&&<ScheduledView tasks={sortDP(active.filter(t=>t.dueDate))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSubTask} projects={projects} labels={labels}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} labels={labels} projects={projects}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
-        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect()} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
+        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect()} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
       </div>
 
       {/* FAB */}
@@ -766,7 +757,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
 }
 
 /* ── Settings View ───────────────────────────────────── */
-function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onSync,syncing,labels,onSaveLbls,projects,onSavePrjs,taskCount,tasks,onExport,onImport}){
+function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRetryDrive,onSync,syncing,labels,onSaveLbls,projects,onSavePrjs,taskCount,tasks,onExport,onImport}){
   const [inp,setInp]=useState(cid);
   const [newLbl,setNewLbl]=useState('');
   const [newPrjName,setNewPrjName]=useState('');
@@ -784,7 +775,7 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onSyn
         <p className="px-4 pt-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Google Sync</p>
         <div className="px-4 pb-4">
           <div className="flex items-center gap-3 mb-3">
-            <span className={'text-xs font-bold px-2 py-1 rounded-full '+(driveOk?'bg-emerald-100 text-emerald-700':connected?'bg-amber-100 text-amber-700':'bg-stone-100 text-stone-500')}>{driveOk?'✓ Connected':'Not connected'}</span>
+            <span className={'text-xs font-bold px-2 py-1 rounded-full '+(driveOk?'bg-emerald-100 text-emerald-700':connected?'bg-red-100 text-red-700':'bg-stone-100 text-stone-500')}>{driveOk?'✓ Connected':connected?'⚠️ Drive failing':'Not connected'}</span>
             {driveOk&&<span className="text-xs text-stone-400">Drive + Calendar active</span>}
           </div>
           {!connected&&<React.Fragment>
@@ -799,8 +790,20 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onSyn
             <button onClick={()=>setCid(inp.trim())} disabled={!inp.trim()||!isHttps} className="w-full py-2.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-bold disabled:opacity-40 mb-2">Save Client ID</button>
             {cid&&isHttps&&<button onClick={onConnect} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black">🔐 Sign in with Google</button>}
           </React.Fragment>}
-          {connected&&<React.Fragment>
-            <button onClick={onSync} disabled={syncing} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black mb-2">{syncing?'⏳ Syncing…':'🔄 Force sync'}</button>
+          {connected&&!driveOk&&(
+          <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-3 text-xs text-red-700 space-y-1.5">
+            <p className="font-bold">⚠️ Signed in, but Drive isn't responding.</p>
+            <p>This usually means the <strong>Google Drive API</strong> isn't enabled (separate from Calendar API).</p>
+            <p className="font-bold mt-1">Fix:</p>
+            <p>1. console.cloud.google.com → your project</p>
+            <p>2. APIs & Services → Library</p>
+            <p>3. Search "Google Drive API" → Enable</p>
+            <p>4. Tap Retry below</p>
+          </div>
+        )}
+        {connected&&<React.Fragment>
+            <button onClick={onRetryDrive} className="w-full py-3 bg-blue-600 text-white rounded-xl text-xs font-black mb-2">🔄 Retry Drive connection</button>
+            <button onClick={onSync} disabled={syncing} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black mb-2">{syncing?'⏳ Syncing…':'🔄 Force sync Calendar'}</button>
             <button onClick={onDisconnect} className="w-full py-2 bg-stone-50 text-stone-400 rounded-xl text-xs border border-stone-200">Disconnect</button>
           </React.Fragment>}
         </div>
