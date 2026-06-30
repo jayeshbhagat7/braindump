@@ -55,7 +55,14 @@ const parseNL=(raw,projects,labels)=>{
   // Labels: #tag
   const tr=/#([a-zA-Z0-9_]+)/g;let m;while((m=tr.exec(raw))!==null)lbls.push(m[1]);text=text.replace(/#[a-zA-Z0-9_]+/g,'').trim();
   // Project: @name
-  const pr=text.match(/@([a-zA-Z0-9_]+)/i);if(pr){const pn=projects.find(p=>p.name.toLowerCase()===pr[1].toLowerCase());if(pn){project=pn.name;text=text.replace(pr[0],'').trim()}}
+  const atIdx=text.indexOf('@');
+  if(atIdx!==-1){
+    const after=text.slice(atIdx+1);
+    const sorted=[...projects].sort((a,b)=>b.name.length-a.name.length);
+    const match=sorted.find(p=>after.toLowerCase().startsWith(p.name.toLowerCase()));
+    if(match){project=match.name;text=(text.slice(0,atIdx)+after.slice(match.name.length)).replace(/\s+/g,' ').trim()}
+    else{const wm=after.match(/^([a-zA-Z0-9_]+)/);if(wm){const pn=projects.find(p=>p.name.toLowerCase()===wm[1].toLowerCase());if(pn){project=pn.name;text=(text.slice(0,atIdx)+after.slice(wm[1].length)).replace(/\s+/g,' ').trim()}}}
+  }
   // Dates
   if(/\btoday\b/i.test(text)){dueDate=todayISO();text=text.replace(/\btoday\b/i,'').trim()}
   else if(/\b(tomorrow|tmrw|tmr)\b/i.test(text)){dueDate=addDays(1);text=text.replace(/\b(tomorrow|tmrw|tmr)\b/i,'').trim()}
@@ -288,7 +295,7 @@ function App(){
         {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask}/>}
         {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
-        {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
+        {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects}/>}
         {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
@@ -464,19 +471,32 @@ function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects,selectMo
 function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,onEdit}){
   const prjCount=p=>tasks.filter(t=>t.project===p.name||t.project===p.id).length;
   const lblCount=l=>tasks.filter(t=>(t.labels||[]).includes(l)).length;
+  const topLevel=projects.filter(p=>!p.parentId);
+  const childrenOf=pid=>projects.filter(p=>p.parentId===pid);
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Browse</h2></div>
       {/* Projects */}
       <div className="mb-1">
         <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Projects</p>
-        {projects.map(p=>(
-          <button key={p.id||p.name} onClick={()=>onNav('project',{prjId:p.id||p.name})} className="w-full bg-white flex items-center gap-3 px-4 py-3.5 active:bg-stone-50">
-            <span className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-sm font-black" style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0].toUpperCase()}</span>
-            <span className="flex-1 text-left text-sm font-semibold text-stone-800">{p.name}</span>
-            <span className="text-xs text-stone-400">{prjCount(p)}</span>
-            <span className="text-stone-300 text-lg">›</span>
-          </button>
+        {topLevel.map(p=>(
+          <React.Fragment key={p.id||p.name}>
+            <button onClick={()=>onNav('project',{prjId:p.id||p.name})} className="w-full bg-white flex items-center gap-3 px-4 py-3.5 active:bg-stone-50">
+              <span className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 text-white text-sm font-black" style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0].toUpperCase()}</span>
+              <span className="flex-1 text-left text-sm font-semibold text-stone-800">{p.name}</span>
+              {childrenOf(p.id).length>0&&<span className="text-[10px] text-stone-400">{childrenOf(p.id).length} sub</span>}
+              <span className="text-xs text-stone-400">{prjCount(p)}</span>
+              <span className="text-stone-300 text-lg">›</span>
+            </button>
+            {childrenOf(p.id).map(c=>(
+              <button key={c.id} onClick={()=>onNav('project',{prjId:c.id||c.name})} className="w-full bg-white flex items-center gap-3 pl-10 pr-4 py-3 active:bg-stone-50 border-t border-stone-50">
+                <span className="w-6 h-6 rounded-lg flex items-center justify-center flex-shrink-0 text-white text-xs font-black" style={{background:c.color||'#6366f1'}}>{(c.name||'?')[0].toUpperCase()}</span>
+                <span className="flex-1 text-left text-xs font-semibold text-stone-600">↳ {c.name}</span>
+                <span className="text-xs text-stone-400">{prjCount(c)}</span>
+                <span className="text-stone-300 text-lg">›</span>
+              </button>
+            ))}
+          </React.Fragment>
         ))}
         {projects.length===0&&<p className="px-4 text-sm text-stone-400 italic">No projects — add in Settings</p>}
       </div>
@@ -606,21 +626,31 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
 }
 
 /* ── Project View ────────────────────────────────────── */
-function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projects}){
+function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,labels,projects,selectMode,setSelectMode,selected,onSelect}){
   if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
   const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const [showDone,setShowDone]=useState(false);
+  const parent=prj.parentId?(projects.find(p=>p.id===prj.parentId)):null;
+  const subs=projects.filter(p=>p.parentId===prj.id);
   return(
     <div className="pb-24">
       <div className="flex items-center gap-3 px-4 pt-4 pb-2">
         <button onClick={onBack} className="text-stone-400 text-xl font-bold mr-1">‹</button>
         <span className="w-9 h-9 rounded-xl flex items-center justify-center text-white font-black text-base" style={{background:prj.color||'#6366f1'}}>{(prj.name||'?')[0].toUpperCase()}</span>
-        <h2 className="text-xl font-black text-stone-900">{prj.name}</h2>
+        <div className="flex-1 min-w-0">
+          {parent&&<button onClick={()=>onNav&&onNav('project',{prjId:parent.id})} className="text-[11px] text-stone-400 font-semibold block">↑ {parent.name}</button>}
+          <h2 className="text-xl font-black text-stone-900 truncate">{prj.name}</h2>
+        </div>
       </div>
+      {subs.length>0&&(
+        <div className="px-4 pb-3 flex gap-1.5 flex-wrap">
+          {subs.map(s=><button key={s.id} onClick={()=>onNav&&onNav('project',{prjId:s.id})} className="text-xs font-bold px-3 py-1.5 rounded-xl border bg-white text-stone-600 border-stone-200">↳ {s.name}</button>)}
+        </div>
+      )}
       <p className="px-4 text-xs text-stone-400 mb-3">{active.length} task{active.length!==1?'s':''}</p>
       {active.length===0&&<div className="text-center py-12"><div style={{fontSize:40}}>✅</div><p className="text-sm font-bold text-stone-500 mt-2">All done in {prj.name}</p></div>}
-      {active.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects}/>)}
+      {active.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}
       {done.length>0&&(
         <div className="mt-2">
           <button onClick={()=>setShowDone(!showDone)} className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-black text-stone-400 uppercase tracking-widest bg-white">
@@ -751,16 +781,26 @@ function QuickAdd({onAdd,onClose,projects,labels}){
   const [text,setText]=useState('');
   const [parsed,setParsed]=useState({text:'',dueDate:null,priority:null,labels:[],project:null});
   const [suggs,setSuggs]=useState([]);
+  const [suggMode,setSuggMode]=useState(null); // 'tag'|'project'
   const ref=useRef(null);
   useEffect(()=>{ref.current&&ref.current.focus()},[]);
   const handleChange=v=>{
     setText(v);setParsed(parseNL(v,projects,labels));
     // Live #tag suggestion as user types
     const hm=v.match(/#([a-zA-Z0-9_]*)$/);
-    if(hm){const partial=hm[1].toLowerCase();setSuggs(labels.filter(l=>l.toLowerCase().startsWith(partial)).slice(0,5))}
-    else setSuggs([]);
+    const am=v.match(/@([a-zA-Z0-9_ ]*)$/);
+    if(hm){setSuggMode('tag');setSuggs(labels.filter(l=>l.toLowerCase().startsWith(hm[1].toLowerCase())).slice(0,5))}
+    else if(am){setSuggMode('project');const partial=am[1].trim().toLowerCase();const matches=partial?projects.filter(p=>p.name.toLowerCase().includes(partial)):projects;setSuggs(matches.slice(0,5))}
+    else {setSuggs([]);setSuggMode(null)}
   };
-  const applySugg=s=>{setText(prev=>{const nv=prev.replace(/#([a-zA-Z0-9_]*)$/,'#'+s+' ');setParsed(parseNL(nv,projects,labels));return nv});setSuggs([])};
+  const applySugg=s=>{
+    setText(prev=>{
+      const nv=suggMode==='tag'?prev.replace(/#([a-zA-Z0-9_]*)$/,'#'+s+' '):prev.replace(/@([a-zA-Z0-9_ ]*)$/,'@'+s+' ');
+      setParsed(parseNL(nv,projects,labels));
+      return nv;
+    });
+    setSuggs([]);setSuggMode(null);
+  };
   const handleAdd=()=>{
     if(!text.trim())return;
     const p=parseNL(text,projects,labels);
@@ -775,10 +815,16 @@ function QuickAdd({onAdd,onClose,projects,labels}){
         <div className="flex justify-center mb-3"><div className="w-10 h-1 bg-stone-200 rounded-full"/></div>
         <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">Quick Add</p>
         <input ref={ref} value={text} onChange={e=>handleChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdd()} placeholder="Task name… tomorrow @Project #label p1" className="w-full text-base text-stone-900 bg-transparent border-b-2 border-stone-200 focus:border-emerald-500 focus:outline-none pb-2 mb-3 transition-colors"/>
-        {suggs.length>0&&(
+        {suggs.length>0&&suggMode==='tag'&&(
           <div className="flex gap-1.5 flex-wrap mb-3 p-2 bg-amber-50 rounded-xl border border-amber-200">
             <span className="text-[10px] text-amber-600 w-full font-semibold">💡 Tap to complete tag:</span>
             {suggs.map(s=><button key={s} onClick={()=>applySugg(s)} className="text-xs bg-white text-amber-700 border border-amber-200 px-2 py-1 rounded-lg font-semibold">#{s}</button>)}
+          </div>
+        )}
+        {suggs.length>0&&suggMode==='project'&&(
+          <div className="flex gap-1.5 flex-wrap mb-3 p-2 bg-indigo-50 rounded-xl border border-indigo-200">
+            <span className="text-[10px] text-indigo-600 w-full font-semibold">💡 Tap to complete project:</span>
+            {suggs.map(p=><button key={p.id||p.name} onClick={()=>applySugg(p.name)} className="text-xs text-white px-2 py-1 rounded-lg font-semibold" style={{background:p.color||'#6366f1'}}>{p.parentId?'↳ ':'📁 '}{p.name}</button>)}
           </div>
         )}
         {/* NLP preview */}
@@ -851,11 +897,11 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Project</p>
               <div className="flex flex-wrap gap-1.5">
                 <Chip on={!t.project} click={()=>s('project',null)}>📥 Inbox</Chip>
-                {projects.map(p=>(
+                {projects.filter(p=>!p.parentId).flatMap(p=>[p,...projects.filter(c=>c.parentId===p.id)]).map(p=>(
                   <button key={p.id||p.name} onClick={()=>s('project',t.project===p.name?null:p.name)}
                     className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(t.project===p.name?'text-white':'bg-white text-stone-600 border-stone-200')}
                     style={{background:t.project===p.name?p.color:'',borderColor:t.project===p.name?p.color:''}}>
-                    {p.name}
+                    {p.parentId?'↳ ':''}{p.name}
                   </button>
                 ))}
               </div>
@@ -931,9 +977,13 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
   const [newLbl,setNewLbl]=useState('');
   const [newPrjName,setNewPrjName]=useState('');
   const [newPrjColor,setNewPrjColor]=useState(PC[0]);
+  const [newPrjParent,setNewPrjParent]=useState(null);
   const [editPrj,setEditPrj]=useState(null);
   const [editPrjName,setEditPrjName]=useState('');
   const [editPrjColor,setEditPrjColor]=useState('');
+  const [editPrjParent,setEditPrjParent]=useState(null);
+  const topLevel=projects.filter(p=>!p.parentId);
+  const childrenOf=pid=>projects.filter(p=>p.parentId===pid);
   const isHttps=location.protocol==='https:';
   return(
     <div className="pb-24">
@@ -983,25 +1033,55 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
             <p className="text-xs font-bold text-stone-600 mb-2">Edit {editPrj.name}</p>
             <input value={editPrjName} onChange={e=>setEditPrjName(e.target.value)} className="w-full px-3 py-2 text-sm border border-stone-200 rounded-xl mb-2 focus:outline-none bg-white"/>
             <div className="flex gap-2 flex-wrap mb-2">{PC.map(c=><button key={c} onClick={()=>setEditPrjColor(c)} className={'w-7 h-7 rounded-full flex-shrink-0 '+(editPrjColor===c?'ring-2 ring-offset-1 ring-stone-700':'')} style={{background:c}}/>)}</div>
+            {childrenOf(editPrj.id).length===0&&(
+              <React.Fragment>
+                <p className="text-[11px] font-bold text-stone-400 uppercase tracking-widest mb-1.5">Parent project (optional)</p>
+                <div className="flex gap-1.5 flex-wrap mb-2">
+                  <Chip on={!editPrjParent} click={()=>setEditPrjParent(null)}>None — top level</Chip>
+                  {topLevel.filter(p=>p.id!==editPrj.id).map(p=><Chip key={p.id} on={editPrjParent===p.id} click={()=>setEditPrjParent(p.id)}>{p.name}</Chip>)}
+                </div>
+              </React.Fragment>
+            )}
+            {childrenOf(editPrj.id).length>0&&<p className="text-[10px] text-stone-400 mb-2 italic">Has sub-projects — can't also be nested under another project.</p>}
             <div className="flex gap-2">
-              <button onClick={()=>{onSavePrjs(projects.map(p=>p.id===editPrj.id?{...p,name:editPrjName.trim()||p.name,color:editPrjColor}:p));setEditPrj(null)}} className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">Save</button>
+              <button onClick={()=>{onSavePrjs(projects.map(p=>p.id===editPrj.id?{...p,name:editPrjName.trim()||p.name,color:editPrjColor,parentId:editPrjParent}:p));setEditPrj(null)}} className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">Save</button>
               <button onClick={()=>setEditPrj(null)} className="px-4 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs">Cancel</button>
             </div>
           </div>
         )}
-        {projects.map(p=>(
-          <div key={p.id||p.name} className="flex items-center gap-3 px-4 py-3 border-b border-stone-50">
-            <span className="w-8 h-8 rounded-xl flex items-center justify-center text-white text-sm font-black flex-shrink-0" style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0]}</span>
-            <span className="flex-1 text-sm font-semibold text-stone-700">{p.name}</span>
-            <span className="text-xs text-stone-400 mr-2">{tasks.filter(t=>t.project===p.name||t.project===p.id).length} tasks</span>
-            <button onClick={()=>{setEditPrj(p);setEditPrjName(p.name);setEditPrjColor(p.color||PC[0])}} className="text-xs text-stone-400 font-semibold px-2 py-1 bg-stone-100 rounded-lg mr-1">Edit</button>
-            <button onClick={()=>onSavePrjs(projects.filter(x=>(x.id||x.name)!==(p.id||p.name)))} className="text-red-300 font-bold text-lg active:text-red-500">×</button>
-          </div>
+        {topLevel.map(p=>(
+          <React.Fragment key={p.id||p.name}>
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-stone-50">
+              <span className="w-8 h-8 rounded-xl flex items-center justify-center text-white text-sm font-black flex-shrink-0" style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0]}</span>
+              <span className="flex-1 text-sm font-semibold text-stone-700">{p.name}</span>
+              <span className="text-xs text-stone-400 mr-2">{tasks.filter(t=>t.project===p.name||t.project===p.id).length} tasks</span>
+              <button onClick={()=>{setEditPrj(p);setEditPrjName(p.name);setEditPrjColor(p.color||PC[0]);setEditPrjParent(p.parentId||null)}} className="text-xs text-stone-400 font-semibold px-2 py-1 bg-stone-100 rounded-lg mr-1">Edit</button>
+              <button onClick={()=>onSavePrjs(projects.filter(x=>(x.id||x.name)!==(p.id||p.name)).map(x=>x.parentId===(p.id||p.name)?{...x,parentId:null}:x))} className="text-red-300 font-bold text-lg active:text-red-500">×</button>
+            </div>
+            {childrenOf(p.id).map(c=>(
+              <div key={c.id} className="flex items-center gap-3 pl-10 pr-4 py-2.5 border-b border-stone-50 bg-stone-50/50">
+                <span className="w-6 h-6 rounded-lg flex items-center justify-center text-white text-xs font-black flex-shrink-0" style={{background:c.color||'#6366f1'}}>{(c.name||'?')[0]}</span>
+                <span className="flex-1 text-xs font-semibold text-stone-600">↳ {c.name}</span>
+                <span className="text-xs text-stone-400 mr-2">{tasks.filter(t=>t.project===c.name||t.project===c.id).length} tasks</span>
+                <button onClick={()=>{setEditPrj(c);setEditPrjName(c.name);setEditPrjColor(c.color||PC[0]);setEditPrjParent(c.parentId||null)}} className="text-xs text-stone-400 font-semibold px-2 py-1 bg-stone-100 rounded-lg mr-1">Edit</button>
+                <button onClick={()=>onSavePrjs(projects.filter(x=>(x.id||x.name)!==(c.id||c.name)))} className="text-red-300 font-bold text-lg active:text-red-500">×</button>
+              </div>
+            ))}
+          </React.Fragment>
         ))}
         <div className="px-4 py-3">
           <input value={newPrjName} onChange={e=>setNewPrjName(e.target.value)} placeholder="New project name…" className="w-full px-3 py-2 text-sm border border-stone-200 rounded-xl mb-2 focus:outline-none bg-stone-50"/>
           <div className="flex gap-2 flex-wrap mb-2">{PC.map(c=><button key={c} onClick={()=>setNewPrjColor(c)} className={'w-7 h-7 rounded-full flex-shrink-0 '+(newPrjColor===c?'ring-2 ring-offset-1 ring-stone-700':'')} style={{background:c}}/>)}</div>
-          <button onClick={()=>{if(newPrjName.trim()){onSavePrjs([...projects,{id:uid(),name:newPrjName.trim(),color:newPrjColor}]);setNewPrjName('')}}} disabled={!newPrjName.trim()} className="w-full py-2.5 bg-stone-800 text-white rounded-xl text-xs font-black disabled:opacity-40">Add Project</button>
+          {topLevel.length>0&&(
+            <React.Fragment>
+              <p className="text-[11px] font-bold text-stone-400 uppercase tracking-widest mb-1.5">Parent project (optional — makes this a sub-project)</p>
+              <div className="flex gap-1.5 flex-wrap mb-2">
+                <Chip on={!newPrjParent} click={()=>setNewPrjParent(null)}>None — top level</Chip>
+                {topLevel.map(p=><Chip key={p.id} on={newPrjParent===p.id} click={()=>setNewPrjParent(p.id)}>{p.name}</Chip>)}
+              </div>
+            </React.Fragment>
+          )}
+          <button onClick={()=>{if(newPrjName.trim()){onSavePrjs([...projects,{id:uid(),name:newPrjName.trim(),color:newPrjColor,parentId:newPrjParent}]);setNewPrjName('');setNewPrjParent(null)}}} disabled={!newPrjName.trim()} className="w-full py-2.5 bg-stone-800 text-white rounded-xl text-xs font-black disabled:opacity-40">Add Project</button>
         </div>
       </div>
       {/* Labels */}
