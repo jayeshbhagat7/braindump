@@ -159,7 +159,7 @@ function App(){
     const old=ls.get('projects',['Home','Office','Family']);
     return old.map((name,i)=>({id:uid(),name,color:PC[i%PC.length]}));
   });
-  const [view,setView]=useState({tab:'today',prjId:null,lbl:null}); // tab: today|inbox|browse|project|label|search|settings|goals
+  const [view,setView]=useState({tab:'today',prjId:null,lbl:null}); // tab: today|inbox|browse|project|label|search|settings|goals|filters
   const [editTask,setEditTask]=useState(null);
   const [showQuickAdd,setShowQuickAdd]=useState(false);
   const [searchQ,setSearchQ]=useState('');
@@ -169,6 +169,9 @@ function App(){
   const [syncing,setSyncing]=useState(false);
   const [toast,setToast]=useState('');
   const [ready,setReady]=useState(false);
+  const [favorites,setFavorites]=useState(()=>ls.get('favorites',[])); // array of {type:'project'|'label',id,name}
+  const saveFavs=f=>{setFavorites(f);ls.set('favorites',f)};
+  const toggleFav=(type,id,name)=>{const exists=favorites.find(f=>f.type===type&&f.id===id);saveFavs(exists?favorites.filter(f=>!(f.type===type&&f.id===id)):[...favorites,{type,id,name}])};
   const [selectMode,setSelectMode]=useState(false);
   const [selected,setSelected]=useState([]);
   const [showLblAssign,setShowLblAssign]=useState(false);
@@ -271,12 +274,11 @@ function App(){
   const archiveSel=()=>{persist(tasks.map(t=>selected.includes(t.id)?{...t,status:'archived'}:t));exitSelect()};
   const deleteSel=()=>{selected.forEach(id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)gcal.del(t.calendarEventId)});persist(tasks.filter(t=>!selected.includes(t.id)));exitSelect()};
   const moveTask=(id,dir)=>{const idx=tasks.findIndex(t=>t.id===id);if(idx<0)return;const swap=idx+dir;if(swap<0||swap>=tasks.length)return;const nt=[...tasks];[nt[idx],nt[swap]]=[nt[swap],nt[idx]];persist(nt)};
-  // Context: which project is currently open (for auto-assign in QuickAdd)
-  const ctxProject=view.tab==='project'?(prjById(view.prjId)||null):null;
 
   if(!ready)return<div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:'#a8a29e'}}><span style={{fontSize:56}}>🧠</span><span style={{fontSize:14,fontWeight:600}}>Loading…</span></div>;
 
-  // Computed
+  // Computed — prjById must come first, others depend on it
+  const prjById=id=>projects.find(p=>p.id===id)||projects.find(p=>p.name===id);
   const active=tasks.filter(t=>t.status!=='archived'&&t.status!=='completed');
   const inbox=active.filter(t=>!t.project).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const td=todayISO();
@@ -286,12 +288,13 @@ function App(){
   const doneTasks=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const archivedTasks=tasks.filter(t=>t.status==='archived');
   const goals=active.filter(t=>t.goalType);
-  const prjById=id=>projects.find(p=>p.id===id)||projects.find(p=>p.name===id);
   const prjTasks=id=>sortDP(active.filter(t=>t.project===id||t.project===(prjById(id)||{}).name));
   const searchResults=searchQ.length>=2?tasks.filter(t=>t.status!=='archived'&&t.text.toLowerCase().includes(searchQ.toLowerCase())).slice(0,40):[];
   const inboxN=inbox.length;
   const todayN=todayTasks.length+overdueTasks.length;
   const scheduledAll=sortDP(active.filter(t=>t.dueDate));
+  // Context project for QuickAdd auto-fill (now prjById is defined above)
+  const ctxProject=view.tab==='project'?(prjById(view.prjId)||null):null;
   const selPool=(()=>{
     if(view.tab==='inbox')return inbox.map(t=>t.id);
     if(view.tab==='today')return [...overdueTasks,...todayTasks,...upcomingTasks].map(t=>t.id);
@@ -311,7 +314,8 @@ function App(){
       <div className="flex-1 overflow-y-auto">
         {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel} onMove={moveTask}/>}
         {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel} onMove={moveTask}/>}
-        {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs}/>}
+        {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
+        {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects}/>}
         {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
         {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel} onMove={moveTask}/>}
         {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
@@ -369,9 +373,9 @@ function App(){
         </div>
       )}
 
-      {/* Bottom nav */}
+      {/* Bottom nav — Settings moved to Browse header */}
       <nav className="bg-white border-t border-stone-100 flex justify-around items-center px-1 flex-shrink-0" style={{paddingTop:8,paddingBottom:10}}>
-        {[{k:'today',e:'🏠',l:'Today',n:todayN},{k:'inbox',e:'📥',l:'Inbox',n:inboxN},{k:'browse',e:'📁',l:'Browse'},{k:'search',e:'🔍',l:'Search'},{k:'settings',e:'⚙️',l:'More'}].map(({k,e,l,n})=>(
+        {[{k:'today',e:'🏠',l:'Today',n:todayN},{k:'inbox',e:'📥',l:'Inbox',n:inboxN},{k:'browse',e:'📁',l:'Browse'},{k:'search',e:'🔍',l:'Search'},{k:'scheduled',e:'📅',l:'Upcoming'}].map(({k,e,l,n})=>(
           <button key={k} onClick={()=>nav(k)} className={'relative flex flex-col items-center gap-0.5 px-2 py-0.5 rounded-xl '+(view.tab===k?'text-emerald-600':'text-stone-400')}>
             <span style={{fontSize:20,lineHeight:1}}>{e}</span>
             <span style={{fontSize:9,fontWeight:700}}>{l}</span>
@@ -513,30 +517,51 @@ function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects,selectMo
 }
 
 /* ── Browse View ─────────────────────────────────────── */
-function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,onEdit,onSavePrjs}){
+function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,onEdit,onSavePrjs,favorites,onToggleFav}){
   const prjCount=p=>tasks.filter(t=>t.project===p.name||t.project===p.id).length;
   const lblCount=l=>tasks.filter(t=>(t.labels||[]).includes(l)).length;
   const tree=prjTree(projects);
   const childCount=pid=>projects.filter(p=>p.parentId===pid).length;
-  const [menu,setMenu]=useState(null); // project object whose menu is open
+  const [menu,setMenu]=useState(null);
   const [confirmDel,setConfirmDel]=useState(null);
+  const [showPrjs,setShowPrjs]=useState(true);
+  const [showFavs,setShowFavs]=useState(true);
+  const [showProfile,setShowProfile]=useState(false);
   const dupPrj=p=>{const n={...p,id:uid(),name:p.name+' Copy',parentId:p.parentId||null};onSavePrjs&&onSavePrjs([...projects,n]);setMenu(null)};
   const delPrj=p=>{onSavePrjs&&onSavePrjs(projects.filter(x=>x.id!==p.id).map(x=>x.parentId===p.id?{...x,parentId:p.parentId||null}:x));setConfirmDel(null);setMenu(null)};
+  const isFav=p=>favorites&&favorites.some(f=>f.type==='project'&&f.id===(p.id||p.name));
   return(
     <div className="pb-24">
-      {/* Project ⋮ menu bottom sheet */}
+      {/* Profile Sheet */}
+      {showProfile&&(
+        <div className="fixed inset-0 z-50 flex items-start">
+          <div className="absolute inset-0 bg-black/50" onClick={()=>setShowProfile(false)}/>
+          <div className="relative bg-stone-900 w-64 h-full shadow-2xl p-5 flex flex-col gap-1 overflow-y-auto">
+            <div className="flex items-center gap-3 mb-5 mt-2">
+              <div className="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-lg">J</div>
+              <div><p className="text-white font-black text-base">Jayesh Bhagat</p><p className="text-stone-400 text-xs">Site-in-Charge · WWC</p></div>
+            </div>
+            {[{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
+              <button key={l} onClick={()=>{onNav(tab);setShowProfile(false)}} className="flex items-center gap-3 py-3 text-stone-300 text-sm font-semibold border-b border-stone-800">
+                <span style={{fontSize:18}}>{ico}</span>{l}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {/* Project menu */}
       {menu&&(
         <div className="fixed inset-0 z-50 flex items-end">
           <div className="absolute inset-0 bg-black/50" onClick={()=>setMenu(null)}/>
           <div className="relative bg-white rounded-t-3xl p-5 w-full">
             <div className="flex items-center gap-3 mb-4">
               <span className="w-8 h-8 rounded-xl flex items-center justify-center text-white font-black" style={{background:menu.color||'#6366f1'}}>{(menu.name||'?')[0]}</span>
-              <span className="font-black text-stone-800">{menu.name}</span>
+              <span className="font-black text-stone-800 flex-1">{menu.name}</span>
             </div>
             {[
-              {ico:'✏️',l:'Edit project',fn:()=>{onNav('settings');setMenu(null)}},
+              {ico:'⭐',l:isFav(menu)?'Remove from Favorites':'Add to Favorites',fn:()=>{onToggleFav&&onToggleFav('project',menu.id||menu.name,menu.name);setMenu(null)}},
+              {ico:'✏️',l:'Edit / Rename',fn:()=>{onNav('settings');setMenu(null)}},
               {ico:'📋',l:'Duplicate',fn:()=>dupPrj(menu)},
-              {ico:'📦',l:'Archive project',fn:()=>{onSavePrjs&&onSavePrjs(projects.map(p=>p.id===menu.id?{...p,archived:true}:p));setMenu(null)}},
             ].map(({ico,l,fn})=>(
               <button key={l} onClick={fn} className="w-full text-left flex items-center gap-3 py-3 border-b border-stone-50 text-sm text-stone-700 font-semibold">
                 <span style={{fontSize:18}}>{ico}</span>{l}
@@ -548,13 +573,12 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
           </div>
         </div>
       )}
-      {/* Delete confirm */}
       {confirmDel&&(
         <div className="fixed inset-0 z-50 flex items-center justify-center px-6">
           <div className="absolute inset-0 bg-black/50" onClick={()=>setConfirmDel(null)}/>
           <div className="relative bg-white rounded-3xl p-6 w-full max-w-sm">
-            <p className="text-base font-black text-stone-900 mb-2">Delete "{confirmDel.name}"?</p>
-            <p className="text-sm text-stone-500 mb-4">Tasks in this project will move to Inbox. Sub-projects will be moved up one level. This cannot be undone.</p>
+            <p className="text-base font-black text-stone-900 mb-2">Delete &#34;{confirmDel.name}&#34;?</p>
+            <p className="text-sm text-stone-500 mb-4">Tasks move to Inbox. Sub-projects move up one level. Cannot be undone.</p>
             <div className="flex gap-3">
               <button onClick={()=>setConfirmDel(null)} className="flex-1 py-3 bg-stone-100 text-stone-700 rounded-xl font-bold text-sm">Cancel</button>
               <button onClick={()=>delPrj(confirmDel)} className="flex-1 py-3 bg-red-500 text-white rounded-xl font-bold text-sm">Delete</button>
@@ -562,48 +586,141 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
           </div>
         </div>
       )}
-      <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Browse</h2></div>
-      {/* Projects */}
-      <div className="mb-1">
-        <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Projects</p>
-        {tree.map(p=>(
-          <div key={p.id||p.name} className={'w-full bg-white flex items-center gap-3 active:bg-stone-50 '+(p.depth>0?'border-t border-stone-50':'')} style={{paddingLeft:16+p.depth*24,paddingRight:8,paddingTop:10,paddingBottom:10}}>
-            <button className="flex items-center gap-3 flex-1 min-w-0" onClick={()=>onNav('project',{prjId:p.id||p.name})}>
-              <span className={(p.depth>0?'w-6 h-6 rounded-lg text-xs':'w-8 h-8 rounded-xl text-sm')+' flex items-center justify-center flex-shrink-0 text-white font-black'} style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0].toUpperCase()}</span>
-              <span className={'flex-1 text-left font-semibold text-stone-800 '+(p.depth>0?'text-xs text-stone-600':'text-sm')}>{p.depth>0?'↳ ':''}{p.name}</span>
-              {childCount(p.id)>0&&<span className="text-[10px] text-stone-400">{childCount(p.id)} sub</span>}
-              <span className="text-xs text-stone-400">{prjCount(p)}</span>
-            </button>
-            <button onClick={e=>{e.stopPropagation();setMenu(p)}} className="w-7 h-7 flex items-center justify-center rounded-full text-stone-400 active:bg-stone-100 flex-shrink-0 text-base">⋮</button>
-          </div>
-        ))}
-        {projects.length===0&&<p className="px-4 text-sm text-stone-400 italic">No projects — add in Settings</p>}
+
+      {/* Profile header */}
+      <div className="flex items-center gap-3 px-4 pt-5 pb-3 border-b border-stone-100">
+        <button onClick={()=>setShowProfile(true)} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-base flex-shrink-0">J</button>
+        <span className="flex-1 font-black text-stone-900 text-lg">Jayesh Bhagat</span>
+        <button onClick={()=>setShowProfile(true)} className="text-stone-400 text-xl px-1">⚙️</button>
       </div>
-      {/* Labels */}
-      {labels.length>0&&(
-        <div className="mt-4 mb-1">
-          <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Labels</p>
-          {labels.map(l=>(
-            <button key={l} onClick={()=>onNav('label',{lbl:l})} className="w-full bg-white flex items-center gap-3 px-4 py-3 active:bg-stone-50">
-              <span className="text-lg">🏷️</span>
-              <span className="flex-1 text-left text-sm font-semibold text-stone-700">{l}</span>
-              <span className="text-xs text-stone-400">{lblCount(l)}</span>
-              <span className="text-stone-300 text-lg">›</span>
-            </button>
-          ))}
+
+      {/* Primary shortcuts */}
+      {[
+        {ico:'📥',l:'Inbox',n:tasks.filter(t=>!t.project).length,tab:'inbox'},
+        {ico:'🔍',l:'Filters & Labels',n:null,tab:'filters'},
+        {ico:'📊',l:'Activity & Done',n:null,tab:'done'},
+      ].map(({ico,l,n,tab})=>(
+        <button key={l} onClick={()=>onNav(tab)} className="w-full flex items-center gap-3 px-4 py-3.5 bg-white active:bg-stone-50 border-b border-stone-50">
+          <span style={{fontSize:18}}>{ico}</span>
+          <span className="flex-1 text-left text-sm font-semibold text-stone-700">{l}</span>
+          {n>0&&<span className="text-xs text-stone-400">{n}</span>}
+          <span className="text-stone-200 text-sm">›</span>
+        </button>
+      ))}
+
+      {/* Favorites */}
+      {favorites&&favorites.length>0&&(
+        <div className="mt-3">
+          <button onClick={()=>setShowFavs(!showFavs)} className="w-full flex items-center justify-between px-4 py-2">
+            <span className="text-xs font-black text-stone-500 uppercase tracking-widest">Favorites</span>
+            <span className="text-stone-300 text-xs">{showFavs?'▾':'▸'}</span>
+          </button>
+          {showFavs&&favorites.map(f=>{
+            const p=f.type==='project'?projects.find(x=>(x.id||x.name)===f.id):null;
+            return(
+              <button key={f.type+f.id} onClick={()=>f.type==='project'?onNav('project',{prjId:f.id}):onNav('label',{lbl:f.id})} className="w-full flex items-center gap-3 px-4 py-3 bg-white active:bg-stone-50 border-t border-stone-50">
+                {f.type==='project'&&p?<span className="w-6 h-6 rounded-lg flex items-center justify-center text-white text-xs font-black flex-shrink-0" style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0]}</span>:<span className="text-sm text-stone-400 flex-shrink-0">#</span>}
+                <span className="flex-1 text-left text-sm font-semibold text-stone-700">{f.name}</span>
+                <span className="text-xs text-stone-400">{f.type==='project'&&p?prjCount(p):tasks.filter(t=>(t.labels||[]).includes(f.id)).length}</span>
+              </button>
+            );
+          })}
         </div>
       )}
-      {/* Other sections */}
-      <div className="mt-4">
-        <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">More</p>
-        {[{ico:'📅',l:'Scheduled',n:tasks.filter(t=>t.dueDate).length,tab:'scheduled'},{ico:'🕸️',l:'Web of Thoughts',n:null,tab:'web'},{ico:'🌟',l:'Goals',n:goals.length,tab:'goals'},{ico:'✅',l:'Completed',n:doneTasks.length,tab:'done'},{ico:'⚙️',l:'Settings',n:null,tab:'settings'}].map(({ico,l,n,tab})=>(
-          <button key={tab} onClick={()=>onNav(tab)} className="w-full bg-white flex items-center gap-3 px-4 py-3.5 active:bg-stone-50">
-            <span className="text-xl">{ico}</span>
-            <span className="flex-1 text-left text-sm font-semibold text-stone-800">{l}</span>
-            {n!==null&&<span className="text-xs text-stone-400">{n}</span>}
-            <span className="text-stone-300 text-lg">›</span>
+
+      {/* My Projects */}
+      <div className="mt-3">
+        <button onClick={()=>setShowPrjs(!showPrjs)} className="w-full flex items-center justify-between px-4 py-2">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-black text-stone-500 uppercase tracking-widest">My Projects</span>
+            <span className="text-[10px] text-stone-400 bg-stone-100 px-1.5 py-0.5 rounded-full font-semibold">{projects.length}</span>
+          </div>
+          <span className="text-stone-300 text-xs">{showPrjs?'▾':'▸'}</span>
+        </button>
+        {showPrjs&&tree.map(p=>(
+          <div key={p.id||p.name} className="w-full bg-white flex items-center border-t border-stone-50 active:bg-stone-50" style={{paddingLeft:16+p.depth*18,paddingRight:8,paddingTop:9,paddingBottom:9}}>
+            <button className="flex items-center gap-2.5 flex-1 min-w-0" onClick={()=>onNav('project',{prjId:p.id||p.name})}>
+              <span className={(p.depth>0?'w-5 h-5 rounded-md text-[10px]':'w-7 h-7 rounded-xl text-xs')+' flex items-center justify-center flex-shrink-0 text-white font-black'} style={{background:p.color||'#6366f1'}}>{(p.name||'?')[0].toUpperCase()}</span>
+              <span className={'flex-1 text-left font-semibold '+(p.depth>0?'text-xs text-stone-600 ml-1':'text-sm text-stone-800')}>{p.name}</span>
+              {childCount(p.id)>0&&<span className="text-[10px] text-stone-300 mr-1">{childCount(p.id)} sub</span>}
+              <span className="text-xs text-stone-400 mr-1">{prjCount(p)||''}</span>
+            </button>
+            <button onClick={e=>{e.stopPropagation();setMenu(p)}} className="w-7 h-7 flex items-center justify-center rounded-full text-stone-300 active:bg-stone-100 flex-shrink-0 text-sm">⋮</button>
+          </div>
+        ))}
+        {projects.length===0&&<p className="px-4 py-2 text-sm text-stone-400 italic">No projects yet</p>}
+        <button onClick={()=>onNav('settings')} className="flex items-center gap-2 px-4 py-2.5 text-xs text-stone-400 font-semibold active:text-stone-600">✏️ Manage projects</button>
+      </div>
+
+      {/* Labels */}
+      {labels.length>0&&(
+        <div className="mt-2 pb-6">
+          <div className="flex items-center justify-between px-4 py-2">
+            <span className="text-xs font-black text-stone-500 uppercase tracking-widest">Labels</span>
+            <button onClick={()=>onNav('filters')} className="text-xs text-emerald-600 font-semibold">See all</button>
+          </div>
+          <div className="flex flex-wrap gap-2 px-4">
+            {labels.map(l=>(
+              <button key={l} onClick={()=>onNav('label',{lbl:l})} className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-stone-100 rounded-xl text-xs font-semibold text-stone-600 active:bg-stone-50 shadow-sm">
+                <span className="text-stone-400">#</span>{l}
+                {lblCount(l)>0&&<span className="text-[10px] text-stone-300">{lblCount(l)}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Filters & Labels View ───────────────────────────── */
+function FiltersLabelsView({tasks,labels,onNav,onSaveLbls,onEdit,onComplete,onToggleSub,projects}){
+  const [newLbl,setNewLbl]=useState('');
+  const BUILT_IN_FILTERS=[
+    {ico:'🔴',l:'Priority 1',n:tasks.filter(t=>t.priority==='P1').length,fn:()=>onNav('search',{_filter:'p1'})},
+    {ico:'🟠',l:'Priority 2',n:tasks.filter(t=>t.priority==='P2').length,fn:()=>onNav('search',{_filter:'p2'})},
+    {ico:'🔵',l:'Priority 3',n:tasks.filter(t=>t.priority==='P3').length,fn:()=>onNav('search',{_filter:'p3'})},
+    {ico:'⚪',l:'Priority 4',n:tasks.filter(t=>t.priority==='P4'||!t.priority).length,fn:()=>onNav('search',{_filter:'p4'})},
+    {ico:'📋',l:'View all',n:tasks.length,fn:()=>onNav('scheduled')},
+    {ico:'📭',l:'No due date',n:tasks.filter(t=>!t.dueDate).length,fn:()=>onNav('inbox')},
+  ];
+  return(
+    <div className="pb-24">
+      <div className="flex items-center gap-3 px-4 pt-5 pb-4">
+        <button onClick={()=>onNav('browse')} className="text-stone-400 text-xl font-bold">‹</button>
+        <h2 className="text-2xl font-black text-stone-900">Filters & Labels</h2>
+      </div>
+      {/* Filters */}
+      <div className="mb-4">
+        <p className="px-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">My Filters</p>
+        {BUILT_IN_FILTERS.map(f=>(
+          <button key={f.l} onClick={f.fn} className="w-full flex items-center gap-3 px-4 py-3.5 bg-white active:bg-stone-50 border-b border-stone-50">
+            <span style={{fontSize:16}}>{f.ico}</span>
+            <span className="flex-1 text-left text-sm font-semibold text-stone-700">{f.l}</span>
+            {f.n>0&&<span className="text-xs text-stone-400">{f.n}</span>}
+            <span className="text-stone-200 text-sm">›</span>
           </button>
         ))}
+      </div>
+      {/* Labels */}
+      <div>
+        <div className="flex items-center justify-between px-4 pb-2">
+          <p className="text-xs font-black text-stone-400 uppercase tracking-widest">Labels</p>
+        </div>
+        {labels.map(l=>(
+          <div key={l} className="flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50">
+            <button onClick={()=>onNav('label',{lbl:l})} className="flex items-center gap-3 flex-1 min-w-0">
+              <span className="text-lg text-emerald-500">◈</span>
+              <span className="flex-1 text-left text-sm font-semibold text-stone-700">{l}</span>
+              <span className="text-xs text-stone-400">{tasks.filter(t=>(t.labels||[]).includes(l)).length}</span>
+            </button>
+            <button onClick={()=>onSaveLbls(labels.filter(x=>x!==l))} className="text-stone-200 text-xl active:text-red-400 px-1">×</button>
+          </div>
+        ))}
+        <div className="flex gap-2 px-4 py-3">
+          <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&newLbl.trim()&&(onSaveLbls([...labels,newLbl.trim()]),setNewLbl(''))} placeholder="New label…" className="flex-1 px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 focus:border-emerald-400"/>
+          <button onClick={()=>{if(newLbl.trim()){onSaveLbls([...labels,newLbl.trim()]);setNewLbl('')}}} disabled={!newLbl.trim()} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-bold disabled:opacity-40">Add</button>
+        </div>
       </div>
     </div>
   );
