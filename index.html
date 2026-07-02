@@ -906,22 +906,206 @@ function SearchView({q,setQ,results,onComplete,onEdit,onToggleSub,labels,project
 
 /* ── Scheduled View ──────────────────────────────────── */
 function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,selectMode,setSelectMode,selected,onSelect}){
-  const td=todayISO(),tm=addDays(1);
-  const grps=[
-    {l:'🔴 Overdue',ts:tasks.filter(t=>t.dueDate<td)},
-    {l:'📌 Today',ts:tasks.filter(t=>t.dueDate===td)},
-    {l:'🌅 Tomorrow',ts:tasks.filter(t=>t.dueDate===tm)},
-    {l:'📅 This Week',ts:tasks.filter(t=>t.dueDate>tm&&withinN(t.dueDate,7))},
-    {l:'🗓 Later',ts:tasks.filter(t=>!withinN(t.dueDate,7)&&t.dueDate>td)},
-  ].filter(g=>g.ts.length);
+  const PRI_DOT={P1:'#ef4444',P2:'#f97316',P3:'#3b82f6',P4:'#d1d5db'};
+  const today=new Date(); today.setHours(0,0,0,0);
+  const todayStr=todayISO();
+  const [weekOffset,setWeekOffset]=useState(0);
+  const [selectedDay,setSelectedDay]=useState(todayStr);
+  const [showOverdue,setShowOverdue]=useState(true);
+  const [collapsedDays,setCollapsedDays]=useState({});
+  const [rescheduling,setRescheduling]=useState(false);
+  const DAY_NAMES=['S','M','T','W','T','F','S'];
+  const MONTH_NAMES=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const DAY_FULL=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+
+  // Week strip — Mon-first order
+  const getWeekDates=offset=>{
+    const d=new Date(today);
+    const dayOfWeek=d.getDay();
+    const diffToMon=dayOfWeek===0?-6:1-dayOfWeek;
+    d.setDate(d.getDate()+diffToMon+offset*7);
+    return Array.from({length:7},(_,i)=>{const x=new Date(d);x.setDate(d.getDate()+i);return x});
+  };
+  const weekDates=getWeekDates(weekOffset);
+  const toISO=d=>d.toISOString().slice(0,10);
+  const overdue=sortDP(tasks.filter(t=>t.dueDate<todayStr));
+  // All future dates that have tasks (for day-by-day sections)
+  const futureDates=[...new Set(tasks.filter(t=>t.dueDate>=todayStr).map(t=>t.dueDate))].sort();
+  const tasksOnDay=d=>sortDP(tasks.filter(t=>t.dueDate===d));
+  const toggleDay=d=>setCollapsedDays(s=>({...s,[d]:!s[d]}));
+
+  const fmtDayHeader=iso=>{
+    const d=new Date(iso+'T00:00:00');
+    const dayName=DAY_FULL[d.getDay()];
+    const monthDay=d.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+    if(iso===todayStr)return dayName+', '+monthDay+' • Today';
+    if(iso===addDays(1))return dayName+', '+monthDay+' • Tomorrow';
+    return dayName+', '+monthDay;
+  };
+
+  const rescheduleOverdue=()=>{
+    tasks.filter(t=>t.dueDate<todayStr).forEach(t=>onEdit({...t,_reschedule:true}));
+    setRescheduling(false);
+  };
+
+  // Month label: show month of first visible weekday
+  const monthLabel=()=>{
+    const d=weekDates[0];
+    return MONTH_NAMES[d.getMonth()]+' '+d.getFullYear();
+  };
+
   return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4 flex items-center justify-between">
-        <div><h2 className="text-3xl font-black text-stone-900">Scheduled</h2><p className="text-sm text-stone-400 mt-0.5">All tasks with a due date</p></div>
-        {tasks.length>0&&<button onClick={()=>setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border flex-shrink-0 '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
+    <div className="flex flex-col h-full pb-16">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 pt-5 pb-2 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <h2 className="text-2xl font-black text-stone-900">{monthLabel()}</h2>
+          <span className="text-stone-400 text-sm">▾</span>
+        </div>
+        {tasks.length>0&&<button onClick={()=>setSelectMode&&setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
       </div>
-      {!grps.length&&<div className="text-center py-12"><div style={{fontSize:44}}>🗒️</div><p className="text-sm font-bold text-stone-500 mt-2">No scheduled tasks</p><p className="text-xs text-stone-400 mt-1">Add a due date to any task to see it here</p></div>}
-      {grps.map(g=><div key={g.l}><div className="px-4 py-2"><span className="text-xs font-black text-stone-400 uppercase tracking-widest">{g.l}</span></div>{g.ts.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}</div>)}
+
+      {/* Week strip */}
+      <div className="flex-shrink-0 bg-white border-b border-stone-100 pb-3">
+        {/* Day names row */}
+        <div className="grid grid-cols-7 px-2 mb-1">
+          {['M','T','W','T','F','S','S'].map((d,i)=>(
+            <div key={i} className="text-center text-[10px] font-bold text-stone-400 py-1">{d}</div>
+          ))}
+        </div>
+        {/* Date cells */}
+        <div className="grid grid-cols-7 px-2 gap-y-0.5">
+          {weekDates.map((d,i)=>{
+            const iso=toISO(d);
+            const isToday=iso===todayStr;
+            const isSelected=iso===selectedDay;
+            const hasTasks=tasks.some(t=>t.dueDate===iso);
+            return(
+              <button key={i} onClick={()=>{setSelectedDay(iso);const el=document.getElementById('day-'+iso);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}}
+                className="flex flex-col items-center py-1">
+                <span className={'w-9 h-9 flex items-center justify-center rounded-full text-sm font-bold transition-all '+(isToday?'bg-emerald-500 text-white':(isSelected?'bg-stone-200 text-stone-800':'text-stone-700'))}>
+                  {d.getDate()}
+                </span>
+                {hasTasks&&<span className={'w-1.5 h-1.5 rounded-full mt-0.5 '+(isToday?'bg-white':'bg-emerald-400')}/>}
+              </button>
+            );
+          })}
+        </div>
+        {/* Week navigation */}
+        <div className="flex justify-between items-center px-4 mt-2">
+          <button onClick={()=>setWeekOffset(w=>w-1)} className="text-xs text-stone-400 font-semibold px-2 py-1 active:bg-stone-100 rounded-lg">‹ Prev</button>
+          {weekOffset!==0&&<button onClick={()=>setWeekOffset(0)} className="text-xs text-emerald-600 font-bold px-2 py-1">Today</button>}
+          <button onClick={()=>setWeekOffset(w=>w+1)} className="text-xs text-stone-400 font-semibold px-2 py-1 active:bg-stone-100 rounded-lg">Next ›</button>
+        </div>
+      </div>
+
+      {/* Scrollable task list */}
+      <div className="flex-1 overflow-y-auto">
+        {/* Overdue */}
+        {overdue.length>0&&(
+          <div className="mb-2">
+            <div className="flex items-center justify-between px-4 py-3 bg-stone-50">
+              <span className="text-base font-black text-stone-800">Overdue</span>
+              <div className="flex items-center gap-2">
+                <button onClick={()=>{
+                  const newDate=todayStr;
+                  overdue.forEach(t=>{const updated={...t,dueDate:newDate};onEdit&&onEdit(updated)});
+                }} className="text-xs font-bold text-red-500 active:text-red-700">Reschedule</button>
+                <button onClick={()=>setShowOverdue(!showOverdue)} className="text-stone-400 text-sm">{showOverdue?'▾':'▸'}</button>
+              </div>
+            </div>
+            {showOverdue&&overdue.map(t=>{
+              const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
+              const ep=effPri(t);
+              const dotColor=PRI_DOT[ep]||'#e5e7eb';
+              return(
+                <div key={t.id} className={'flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50 '+(selected&&selected.includes(t.id)?'bg-emerald-50':'')} onClick={()=>selectMode?onSelect&&onSelect(t.id):onEdit(t)}>
+                  {selectMode?(
+                    <div className={'w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(selected&&selected.includes(t.id)?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+                      {selected&&selected.includes(t.id)&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                    </div>
+                  ):(
+                    <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}}
+                      className="w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center flex-shrink-0"
+                      style={{borderColor:dotColor}}>
+                      <span className="w-2 h-2 rounded-full" style={{background:dotColor}}/>
+                    </button>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-stone-800 font-medium leading-snug">{t.text}</p>
+                    <div className="flex items-center justify-between mt-0.5">
+                      <span className="text-[11px] text-red-500 font-semibold">📅 {fmtFull(t.dueDate)}{t.recurring?' 🔄':''}</span>
+                      {prj&&<span className="text-[11px] text-stone-400 font-medium">{prj.name} #</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Day-by-day sections */}
+        {futureDates.length===0&&overdue.length===0&&(
+          <div className="text-center py-16"><div style={{fontSize:44}}>🗒️</div><p className="text-sm font-bold text-stone-500 mt-2">No upcoming tasks</p><p className="text-xs text-stone-400 mt-1">Add a due date to any task</p></div>
+        )}
+        {futureDates.map(date=>{
+          const dayTasks=tasksOnDay(date);
+          const collapsed=collapsedDays[date];
+          const SHOW_LIMIT=5;
+          const visible=collapsed?dayTasks.slice(0,SHOW_LIMIT):dayTasks;
+          const extra=dayTasks.length-SHOW_LIMIT;
+          return(
+            <div key={date} id={'day-'+date} className="mb-1">
+              {/* Day header */}
+              <button onClick={()=>toggleDay(date)} className="w-full flex items-center justify-between px-4 py-3 bg-stone-50 active:bg-stone-100">
+                <span className={'text-base font-black '+(date===todayStr?'text-emerald-600':'text-stone-800')}>{fmtDayHeader(date)}</span>
+                <span className="text-stone-400 text-xs">{collapsed?'▸':'▾'}</span>
+              </button>
+              {/* Tasks */}
+              {!collapsed&&visible.map(t=>{
+                const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
+                const ep=effPri(t);
+                const dotColor=PRI_DOT[ep]||'#e5e7eb';
+                const subs=t.subtasks||[];
+                return(
+                  <div key={t.id} className={'flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50 '+(selected&&selected.includes(t.id)?'bg-emerald-50':'')} onClick={()=>selectMode?onSelect&&onSelect(t.id):onEdit(t)}>
+                    {selectMode?(
+                      <div className={'w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(selected&&selected.includes(t.id)?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+                        {selected&&selected.includes(t.id)&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                      </div>
+                    ):(
+                      <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}}
+                        className="w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center"
+                        style={{borderColor:dotColor}}>
+                        <span className="w-2 h-2 rounded-full" style={{background:dotColor}}/>
+                      </button>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-stone-800 font-medium leading-snug">{t.text}</p>
+                      <div className="flex items-center justify-between mt-0.5 gap-2">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          {subs.length>0&&<span className="text-[10px] text-stone-400">▸ {subs.filter(s=>s.done).length}/{subs.length}</span>}
+                          {t.recurring&&<span className="text-[10px] text-teal-500">🔄</span>}
+                          {(t.labels||[]).slice(0,1).map(l=><span key={l} className="text-[10px] text-stone-400">#{l}</span>)}
+                        </div>
+                        {prj&&<span className="text-[11px] text-stone-400 font-medium flex-shrink-0">{prj.name} #</span>}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {/* "N more" toggle */}
+              {!collapsed&&extra>0&&(
+                <button onClick={()=>setCollapsedDays(s=>({...s,[date]:false}))} className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-stone-400 font-semibold bg-white border-b border-stone-50">
+                  <span className="flex gap-0.5">{Array.from({length:Math.min(3,extra)}).map((_,i)=><span key={i} className="w-1.5 h-1.5 rounded-full bg-stone-300"/>)}</span>
+                  {extra} more
+                </button>
+              )}
+            </div>
+          );
+        })}
+        <div style={{height:40}}/>
+      </div>
     </div>
   );
 }
