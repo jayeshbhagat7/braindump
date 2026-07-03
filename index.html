@@ -37,6 +37,7 @@ const nextRecur=(d,r)=>{const dt=new Date(d+'T00:00:00');if(r==='daily')dt.setDa
 const fmtDate=d=>{if(!d)return'';if(d===todayISO())return'Today';if(d===addDays(1))return'Tomorrow';const dt=new Date(d+'T00:00:00');const diff=Math.ceil((dt-new Date(todayISO()+'T00:00:00'))/(864e5));if(diff>0&&diff<=6)return dt.toLocaleDateString('en-IN',{weekday:'short'});return dt.toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
 const fmtFull=d=>d?new Date(d+'T00:00:00').toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'}):'';
 const fmtCreated=d=>d?new Date(d).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'';
+const fmtTime=t=>{if(!t)return'';const parts=t.split(':');const h=Number(parts[0]),m=Number(parts[1]);if(isNaN(h)||isNaN(m))return'';const ap=h>=12?'PM':'AM';const h12=h%12||12;return h12+':'+String(m).padStart(2,'0')+' '+ap};
 const isOverdue=d=>!!d&&d<todayISO();
 const withinN=(d,n)=>{if(!d)return false;const s=new Date(todayISO()+'T00:00:00'),e=new Date(s);e.setDate(e.getDate()+n);const dt=new Date(d+'T00:00:00');return dt>=s&&dt<=e};
 const daysOver=d=>{if(!isOverdue(d))return 0;return Math.ceil((new Date(todayISO()+'T00:00:00')-new Date(d+'T00:00:00'))/(864e5))};
@@ -72,8 +73,13 @@ const parseNL=(raw,projects,labels)=>{
   else if(/\bnext month\b/i.test(text)){dueDate=addDays(30);text=text.replace(/\bnext month\b/i,'').trim()}
   else{for(let i=0;i<7;i++){const re=new RegExp('\\b'+WD[i],'i');if(re.test(text)&&!dueDate){dueDate=nextWD(i);text=text.replace(re,'').trim();break}}}
   if(!dueDate){const inM=text.match(/\bin (\d+) (day|week|month)s?\b/i);if(inM){const n=parseInt(inM[1]),u=inM[2].toLowerCase();dueDate=u==='day'?addDays(n):u==='week'?addDays(n*7):addDays(n*30);text=text.replace(inM[0],'').trim()}}
+  // Time: "3pm", "3:30pm", "15:30", "at 9am"
+  let dueTime=null;
+  const tm=text.match(/\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  if(tm){let h=parseInt(tm[1]);const mi=tm[2]?parseInt(tm[2]):0;const ap=tm[3].toLowerCase();if(ap==='pm'&&h<12)h+=12;if(ap==='am'&&h===12)h=0;dueTime=String(h).padStart(2,'0')+':'+String(mi).padStart(2,'0');text=text.replace(tm[0],'').trim()}
+  else{const tm24=text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);if(tm24){dueTime=String(parseInt(tm24[1])).padStart(2,'0')+':'+tm24[2];text=text.replace(tm24[0],'').trim()}}
   text=text.replace(/\s+/g,' ').trim();
-  return{text:text||raw.trim(),dueDate,priority,labels:lbls,project};
+  return{text:text||raw.trim(),dueDate,dueTime,priority,labels:lbls,project};
 };
 
 /* ── Google + Drive ─────────────────────────────────── */
@@ -176,11 +182,16 @@ function App(){
   const [selected,setSelected]=useState([]);
   const [showLblAssign,setShowLblAssign]=useState(false);
   const [showPrjMove,setShowPrjMove]=useState(false);
+  const [sections,setSections]=useState(()=>ls.get('sections',[])); // {id,name,projectId,order}
 
-  // Init
+  // Init — Inbox Zero: any un-projected item older than 7 days auto-archives (not just wishes)
   useEffect(()=>{
     const co=new Date();co.setDate(co.getDate()-7);
-    const t=ls.get('tasks',[]).map(t=>{if(t.type==='wish'&&t.status==='inbox'&&new Date(t.createdAt)<co)return{...t,status:'archived',autoArchived:true};return t});
+    const t=ls.get('tasks',[]).map(t=>{
+      const inInbox=!t.project&&t.status!=='archived'&&t.status!=='completed';
+      if(inInbox&&t.createdAt&&new Date(t.createdAt)<co)return{...t,status:'archived',autoArchived:true};
+      return t;
+    });
     ls.set('tasks',t);setTasks(t);setReady(true);
   },[]);
   useEffect(()=>{
@@ -199,7 +210,7 @@ function App(){
       const localTasks=ls.get('tasks',[]);
       const localTs=ls.get('tasks_ts',0);
       if(!driveData||!driveData.tasks){
-        const ok=await drv.save({tasks:localTasks,labels,projects,_ts:Date.now()});
+        const ok=await drv.save({tasks:localTasks,labels,projects,sections,_ts:Date.now()});
         setDriveOk(ok);
         if(ok)showToast('☁️ '+localTasks.length+' tasks saved to Drive');
         else showToast('⚠️ Drive API may not be enabled — see Settings');
@@ -212,30 +223,33 @@ function App(){
         setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
         if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
         if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
+        if(driveData.sections){setSections(driveData.sections);ls.set('sections',driveData.sections)}
         showToast('📥 Restored '+driveTasks.length+' tasks from Drive!');
-        if(driveData._foundIn&&driveData._foundIn!==STABLE_FILE){drv.save({tasks:driveTasks,labels,projects})}
+        if(driveData._foundIn&&driveData._foundIn!==STABLE_FILE){drv.save({tasks:driveTasks,labels,projects,sections:driveData.sections||sections})}
       } else if(driveTs>localTs&&driveTasks.length>=localTasks.length){
         setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
         if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
         if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
+        if(driveData.sections){setSections(driveData.sections);ls.set('sections',driveData.sections)}
         showToast('📥 '+driveTasks.length+' tasks synced from Drive');
       } else {
-        const ok=await drv.save({tasks:localTasks,labels,projects,_ts:Math.max(localTs,Date.now())});
+        const ok=await drv.save({tasks:localTasks,labels,projects,sections,_ts:Math.max(localTs,Date.now())});
         if(ok&&driveData._foundIn&&driveData._foundIn!==STABLE_FILE)showToast('☁️ '+localTasks.length+' tasks migrated to Drive');
       }
     }catch(e){setDriveOk(false);showToast('⚠️ Drive sync error — working offline')}
-  },[labels,projects]);
+  },[labels,projects,sections]);
 
   useEffect(()=>{if(!gcalOk)return;runDriveSync()},[gcalOk]);
 
   const showToast=(m,ms=3000)=>{setToast(m);setTimeout(()=>setToast(''),ms)};
-  const persist=useCallback((t,l,p)=>{const fl=l||labels,fp=p||projects;setTasks(t);ls.set('tasks',t);const ts=Date.now();ls.set('tasks_ts',ts);if(gcalOk&&driveOk)drv.save({tasks:t,labels:fl,projects:fp,_ts:ts}).catch(()=>{});},[gcalOk,driveOk,labels,projects]);
-  const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk&&driveOk)drv.save({tasks,labels:l,projects}).catch(()=>{})};
-  const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p}).catch(()=>{})};
+  const persist=useCallback((t,l,p)=>{const fl=l||labels,fp=p||projects;setTasks(t);ls.set('tasks',t);const ts=Date.now();ls.set('tasks_ts',ts);if(gcalOk&&driveOk)drv.save({tasks:t,labels:fl,projects:fp,sections,_ts:ts}).catch(()=>{});},[gcalOk,driveOk,labels,projects,sections]);
+  const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk&&driveOk)drv.save({tasks,labels:l,projects,sections}).catch(()=>{})};
+  const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p,sections}).catch(()=>{})};
+  const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections:sec}).catch(()=>{})};
 
   // Task operations
   const addTask=async(taskData)=>{
-    const t={id:uid(),createdAt:new Date().toISOString(),dueDate:null,labels:[],project:null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,...taskData};
+    const t={id:uid(),createdAt:new Date().toISOString(),dueDate:null,dueTime:null,labels:[],project:null,sectionId:null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,...taskData};
     let newTasks=[...tasks,t];
     if(gcalOk&&t.dueDate){const cid=await gcal.create(t);if(cid){t.calendarEventId=cid;newTasks=newTasks.map(x=>x.id===t.id?t:x)}}
     persist(newTasks);
@@ -259,7 +273,10 @@ function App(){
     if(upd.status==='completed'||upd.status==='archived')s=upd.status;
     const old=tasks.find(t=>t.id===upd.id);let ceid=upd.calendarEventId;
     if(gcalOk){if(upd.dueDate&&s!=='archived'){if(!ceid)ceid=await gcal.create({...upd,status:s});else if(old?.dueDate!==upd.dueDate||old?.text!==upd.text){gcal.del(ceid);ceid=await gcal.create({...upd,status:s})}}else if(ceid){gcal.del(ceid);ceid=null}}
-    persist(tasks.map(t=>t.id===upd.id?{...upd,status:s,calendarEventId:ceid}:t));setEditTask(null);
+    // Sanity: a sectionId only makes sense if it belongs to the task's current project
+    let sectionId=upd.sectionId||null;
+    if(sectionId){const sec=sections.find(x=>x.id===sectionId);const prjObj=projects.find(p=>p.name===upd.project||p.id===upd.project);if(!sec||!prjObj||sec.projectId!==prjObj.id)sectionId=null}
+    persist(tasks.map(t=>t.id===upd.id?{...upd,status:s,calendarEventId:ceid,sectionId}:t));setEditTask(null);
   };
   const syncAll=async()=>{setSyncing(true);const dated=tasks.filter(t=>t.dueDate&&t.status!=='archived'&&!t.calendarEventId);let upd=[...tasks];let cnt=0;for(const t of dated){const id=await gcal.create(t);if(id){upd=upd.map(u=>u.id===t.id?{...u,calendarEventId:id}:u);cnt++}}persist(upd);setSyncing(false);showToast('✅ Synced '+cnt+' tasks')};
   const exportJSON=()=>{const d={tasks,labels,projects,exportedAt:new Date().toISOString()};const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='braindump-backup-'+todayISO()+'.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);showToast('💾 Backup downloaded!')};
@@ -270,10 +287,22 @@ function App(){
   const exitSelect=()=>{setSelectMode(false);setSelected([])};
   const copySelected=()=>{const texts=selected.map(id=>tasks.find(t=>t.id===id)).filter(Boolean).map(t=>'• '+t.text);if(navigator.clipboard)navigator.clipboard.writeText(texts.join('\n')).then(()=>showToast('📋 Copied '+texts.length+' tasks')).catch(()=>showToast('❌ Copy failed'));exitSelect()};
   const assignLabels=lbls=>{persist(tasks.map(t=>!selected.includes(t.id)?t:{...t,labels:[...new Set([...(t.labels||[]),...lbls])]}));setShowLblAssign(false);exitSelect();showToast('🏷️ Labels applied to '+selected.length+' tasks')};
-  const moveSelToProject=prjName=>{persist(tasks.map(t=>!selected.includes(t.id)?t:{...t,project:prjName||null,status:prjName?'active':'inbox'}));exitSelect();showToast('📁 Moved '+selected.length+' tasks to '+(prjName||'Inbox'))};
+  const moveSelToProject=prjName=>{persist(tasks.map(t=>!selected.includes(t.id)?t:{...t,project:prjName||null,sectionId:null,status:prjName?'active':'inbox'}));exitSelect();showToast('📁 Moved '+selected.length+' tasks to '+(prjName||'Inbox'))};
   const archiveSel=()=>{persist(tasks.map(t=>selected.includes(t.id)?{...t,status:'archived'}:t));exitSelect()};
   const deleteSel=()=>{selected.forEach(id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)gcal.del(t.calendarEventId)});persist(tasks.filter(t=>!selected.includes(t.id)));exitSelect()};
-  const moveTask=(id,dir)=>{const idx=tasks.findIndex(t=>t.id===id);if(idx<0)return;const swap=idx+dir;if(swap<0||swap>=tasks.length)return;const nt=[...tasks];[nt[idx],nt[swap]]=[nt[swap],nt[idx]];persist(nt)};
+  // Reorder a task relative to its neighbor within the *visible, ordered* list (listIds), not the raw array
+  const moveTask=(id,dir,listIds)=>{
+    const ids=listIds&&listIds.length?listIds:tasks.map(t=>t.id);
+    const vIdx=ids.indexOf(id);if(vIdx<0)return;
+    const swapId=ids[vIdx+dir];if(swapId===undefined)return;
+    const arr=[...tasks];
+    const i1=arr.findIndex(t=>t.id===id),i2=arr.findIndex(t=>t.id===swapId);
+    if(i1<0||i2<0)return;
+    [arr[i1],arr[i2]]=[arr[i2],arr[i1]];
+    persist(arr);
+  };
+  // Enter select mode via long-press on a task row (replaces separate "Select" button)
+  const startSelect=id=>{setSelectMode(true);setSelected([id])};
 
   if(!ready)return<div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:'#a8a29e'}}><span style={{fontSize:56}}>🧠</span><span style={{fontSize:14,fontWeight:600}}>Loading…</span></div>;
 
@@ -312,15 +341,15 @@ function App(){
 
       {/* Main content */}
       <div className="flex-1 overflow-y-auto">
-        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel} onMove={moveTask}/>}
-        {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel} onMove={moveTask}/>}
+        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
         {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects}/>}
         {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
-        {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel} onMove={moveTask}/>}
-        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
+        {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections}/>}
+        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
-        {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} setSelectMode={setSelectMode} selected={selected} onSelect={toggleSel}/>}
+        {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
         {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
@@ -362,6 +391,12 @@ function App(){
       {selectMode&&(
         <div className="bg-white border-t border-stone-100 px-3 py-2 flex gap-2 items-center flex-shrink-0" style={{overflowX:'auto',scrollbarWidth:'none'}}>
           <span className="text-xs font-bold text-stone-500 flex-shrink-0">{selected.length} sel</span>
+          {selected.length===1&&(
+            <React.Fragment>
+              <button onClick={()=>moveTask(selected[0],-1,selPool)} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0">⬆️</button>
+              <button onClick={()=>moveTask(selected[0],1,selPool)} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0">⬇️</button>
+            </React.Fragment>
+          )}
           <button onClick={()=>setSelected([...selPool])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">All</button>
           <button onClick={()=>setSelected([])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">None</button>
           <button onClick={copySelected} disabled={!selected.length} className="text-xs bg-emerald-100 text-emerald-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">📋</button>
@@ -385,15 +420,15 @@ function App(){
       </nav>
 
       {/* Quick Add */}
-      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels} ctxProject={ctxProject}/>}
+      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels} ctxProject={ctxProject} sections={sections}/>}
       {/* Task Edit Modal */}
-      {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])}/>}
+      {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections}/>}
     </div>
   );
 }
 
 /* ── Task Row ────────────────────────────────────────── */
-function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onMoveUp,onMoveDown}){
+function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress}){
   const [expanded,setExpanded]=useState(false);
   const done=task.status==='completed';
   const ep=effPri(task);
@@ -402,12 +437,16 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
   const doneSubs=subs.filter(s=>s.done).length;
   const prj=task.project?projects.find(p=>p.name===task.project||p.id===task.project):null;
   const circleColor=ep?PRI_COLOR[ep]:'#d1d5db';
-  const handleRowClick=()=>selectMode?onSelect&&onSelect(task.id):!done&&onEdit(task);
+  const lpTimer=useRef(null);
+  const lpFired=useRef(false);
+  const startLP=()=>{lpFired.current=false;lpTimer.current=setTimeout(()=>{lpFired.current=true;if(navigator.vibrate)navigator.vibrate(15);onLongPress&&onLongPress(task.id)},450)};
+  const cancelLP=()=>{if(lpTimer.current){clearTimeout(lpTimer.current);lpTimer.current=null}};
+  const handleRowClick=()=>{if(lpFired.current){lpFired.current=false;return}selectMode?onSelect&&onSelect(task.id):!done&&onEdit(task)};
   const fmtCreatedShort=iso=>{if(!iso)return'';const d=new Date(iso);const now=new Date();const diff=Math.floor((now-d)/864e5);if(diff===0)return'Today '+d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});if(diff===1)return'Yesterday';if(diff<7)return diff+'d ago';return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
 
   return(
     <div className={'bg-white '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')}>
-      <div className="flex gap-3 px-4 py-3" onClick={handleRowClick}>
+      <div className="flex gap-3 px-4 py-3" onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={cancelLP} onTouchMove={cancelLP} onMouseDown={startLP} onMouseUp={cancelLP} onMouseLeave={cancelLP}>
         {/* Priority circle / select checkbox */}
         {selectMode?(
           <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
@@ -425,7 +464,7 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
           <div className="flex flex-wrap items-center gap-2 mt-1">
             {task.dueDate&&(
               <span className={'text-[11px] font-semibold '+(isOverdue(task.dueDate)&&!done?'text-red-500':task.dueDate===todayISO()?'text-emerald-600':'text-stone-400')}>
-                📅 {fmtDate(task.dueDate)}{auto&&!done?' ⬆':''}
+                📅 {fmtDate(task.dueDate)}{task.dueTime?' ⏰ '+fmtTime(task.dueTime):''}{auto&&!done?' ⬆':''}
               </span>
             )}
             {showProject&&prj&&<span className="text-[11px] font-semibold" style={{color:prj.color}}>● {prj.name}</span>}
@@ -452,13 +491,6 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
             </div>
           )}
         </div>
-        {/* Reorder arrows — only show when neither selectMode nor done */}
-        {(onMoveUp||onMoveDown)&&!selectMode&&!done&&(
-          <div className="flex flex-col gap-0.5 flex-shrink-0 ml-1 justify-center">
-            <button onClick={ev=>{ev.stopPropagation();onMoveUp&&onMoveUp()}} disabled={!onMoveUp} className="text-stone-200 text-xs disabled:opacity-0 active:text-stone-500 leading-none py-0.5">▲</button>
-            <button onClick={ev=>{ev.stopPropagation();onMoveDown&&onMoveDown()}} disabled={!onMoveDown} className="text-stone-200 text-xs disabled:opacity-0 active:text-stone-500 leading-none py-0.5">▼</button>
-          </div>
-        )}
       </div>
       <div className="ml-16 h-px bg-stone-100"/>
     </div>
@@ -466,28 +498,26 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
 }
 
 /* ── Today View ─────────────────────────────────────── */
-function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,projects,selectMode,setSelectMode,selected,onSelect,onMove}){
+function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,projects,selectMode,selected,onSelect,onLongPress}){
   const [showUpcoming,setShowUpcoming]=useState(true);
   const dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const now=new Date();
-  const allToday=[...overdue,...today];
   return(
     <div className="pb-24">
-      <div className="px-4 pt-5 pb-4 flex items-center justify-between">
-        <div><p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">{dayNames[now.getDay()]}</p><h2 className="text-3xl font-black text-stone-900">Today</h2><p className="text-sm text-stone-400 mt-0.5">{now.toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p></div>
-        {(allToday.length+upcoming.length)>0&&<button onClick={()=>setSelectMode&&setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border flex-shrink-0 '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
+      <div className="px-4 pt-5 pb-4">
+        <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">{dayNames[now.getDay()]}</p><h2 className="text-3xl font-black text-stone-900">Today</h2><p className="text-sm text-stone-400 mt-0.5">{now.toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p>
       </div>
       {overdue.length===0&&today.length===0&&<div className="text-center py-12 px-8"><div style={{fontSize:48}} className="mb-3">🎉</div><p className="text-base font-bold text-stone-600">All caught up!</p><p className="text-sm text-stone-400 mt-1">No tasks due today</p></div>}
       {overdue.length>0&&(
         <div className="mb-2">
           <div className="px-4 py-2 flex items-center gap-2"><span className="text-xs font-black text-red-500 uppercase tracking-widest">🔴 Overdue ({overdue.length})</span></div>
-          {overdue.map((t,i)=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onMoveUp={i>0?()=>onMove&&onMove(t.id,-1):null} onMoveDown={i<overdue.length-1?()=>onMove&&onMove(t.id,1):null}/>)}
+          {overdue.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
         </div>
       )}
       {today.length>0&&(
         <div className="mb-2">
           <div className="px-4 py-2"><span className="text-xs font-black text-emerald-600 uppercase tracking-widest">📌 Today ({today.length})</span></div>
-          {today.map((t,i)=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onMoveUp={i>0?()=>onMove&&onMove(t.id,-1):null} onMoveDown={i<today.length-1?()=>onMove&&onMove(t.id,1):null}/>)}
+          {today.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
         </div>
       )}
       {upcoming.length>0&&(
@@ -495,23 +525,24 @@ function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,project
           <button onClick={()=>setShowUpcoming(!showUpcoming)} className="w-full px-4 py-2 flex items-center justify-between text-xs font-black text-stone-400 uppercase tracking-widest">
             <span>📅 Upcoming ({upcoming.length})</span><span>{showUpcoming?'▾':'▸'}</span>
           </button>
-          {showUpcoming&&upcoming.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}
+          {showUpcoming&&upcoming.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
         </div>
       )}
+      {selectMode&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
     </div>
   );
 }
 
 /* ── Inbox View ─────────────────────────────────────── */
-function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects,selectMode,setSelectMode,selected,onSelect,onMove}){
+function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects,selectMode,selected,onSelect,onLongPress}){
   return(
     <div className="pb-24">
-      <div className="px-4 pt-5 pb-4 flex items-center justify-between">
-        <div><h2 className="text-3xl font-black text-stone-900">Inbox</h2><p className="text-sm text-stone-400 mt-0.5">Tasks without a project — newest first</p></div>
-        {tasks.length>0&&<button onClick={()=>setSelectMode&&setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border flex-shrink-0 '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
+      <div className="px-4 pt-5 pb-4">
+        <h2 className="text-3xl font-black text-stone-900">Inbox</h2><p className="text-sm text-stone-400 mt-0.5">Braindump anything. Shift it to a project within 7 days, or it auto-archives.</p>
       </div>
       {!tasks.length&&<div className="text-center py-12"><div style={{fontSize:48}}>📭</div><p className="text-base font-bold text-stone-600 mt-3">Inbox zero!</p><p className="text-sm text-stone-400 mt-1">Tap + to add tasks</p></div>}
-      {tasks.map((t,i)=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} showCreated onMoveUp={i>0?()=>onMove&&onMove(t.id,-1):null} onMoveDown={i<tasks.length-1?()=>onMove&&onMove(t.id,1):null}/>)}
+      {tasks.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} showCreated onLongPress={onLongPress}/>)}
+      {selectMode&&tasks.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
     </div>
   );
 }
@@ -822,13 +853,23 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
 }
 
 /* ── Project View ────────────────────────────────────── */
-function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,labels,projects,selectMode,setSelectMode,selected,onSelect}){
+function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections}){
   if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
   const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const [showDone,setShowDone]=useState(false);
+  const [viewMode,setViewMode]=useState('list'); // 'list' | 'kanban'
+  const [addingSection,setAddingSection]=useState(false);
+  const [newSecName,setNewSecName]=useState('');
+  const [secMenu,setSecMenu]=useState(null);
   const ancestors=prjAncestors(projects,prj.id);
   const subs=projects.filter(p=>p.parentId===prj.id);
+  const prjSections=(sections||[]).filter(s=>s.projectId===prj.id).sort((a,b)=>(a.order||0)-(b.order||0));
+  const inSection=sid=>active.filter(t=>t.sectionId===sid);
+  const noSection=active.filter(t=>!t.sectionId||!prjSections.find(s=>s.id===t.sectionId));
+  const addSection=()=>{const n=newSecName.trim();if(!n)return;onSaveSections&&onSaveSections([...(sections||[]),{id:uid(),name:n,projectId:prj.id,order:prjSections.length}]);setNewSecName('');setAddingSection(false)};
+  const renameSection=(id,name)=>onSaveSections&&onSaveSections((sections||[]).map(s=>s.id===id?{...s,name}:s));
+  const delSection=id=>{onSaveSections&&onSaveSections((sections||[]).filter(s=>s.id!==id));setSecMenu(null)};
   return(
     <div className="pb-24">
       <div className="flex items-center gap-3 px-4 pt-4 pb-2">
@@ -847,15 +888,85 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
           )}
           <h2 className="text-xl font-black text-stone-900 truncate">{prj.name}</h2>
         </div>
+        {prjSections.length>0&&(
+          <div className="flex bg-stone-100 rounded-xl p-0.5 flex-shrink-0">
+            <button onClick={()=>setViewMode('list')} className={'text-[11px] font-bold px-2.5 py-1 rounded-lg '+(viewMode==='list'?'bg-white text-stone-800 shadow-sm':'text-stone-400')}>☰ List</button>
+            <button onClick={()=>setViewMode('kanban')} className={'text-[11px] font-bold px-2.5 py-1 rounded-lg '+(viewMode==='kanban'?'bg-white text-stone-800 shadow-sm':'text-stone-400')}>▤ Board</button>
+          </div>
+        )}
       </div>
       {subs.length>0&&(
         <div className="px-4 pb-3 flex gap-1.5 flex-wrap">
           {subs.map(s=><button key={s.id} onClick={()=>onNav&&onNav('project',{prjId:s.id})} className="text-xs font-bold px-3 py-1.5 rounded-xl border bg-white text-stone-600 border-stone-200">↳ {s.name}</button>)}
         </div>
       )}
-      <p className="px-4 text-xs text-stone-400 mb-3">{active.length} task{active.length!==1?'s':''}</p>
+      <div className="px-4 flex items-center justify-between mb-3">
+        <p className="text-xs text-stone-400">{active.length} task{active.length!==1?'s':''}</p>
+        {!addingSection&&<button onClick={()=>setAddingSection(true)} className="text-[11px] font-bold text-indigo-500">+ Section</button>}
+      </div>
+      {addingSection&&(
+        <div className="px-4 mb-3 flex gap-2">
+          <input autoFocus value={newSecName} onChange={e=>setNewSecName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSection()} placeholder="Section name…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
+          <button onClick={addSection} className="px-3 py-2 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-xl text-xs font-black">Add</button>
+          <button onClick={()=>{setAddingSection(false);setNewSecName('')}} className="px-3 py-2 text-stone-400 text-xs font-bold">✕</button>
+        </div>
+      )}
       {active.length===0&&<div className="text-center py-12"><div style={{fontSize:40}}>✅</div><p className="text-sm font-bold text-stone-500 mt-2">All done in {prj.name}</p></div>}
-      {active.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}
+
+      {/* List view: grouped by section */}
+      {viewMode==='list'&&active.length>0&&(
+        <React.Fragment>
+          {noSection.length>0&&prjSections.length>0&&<div className="px-4 py-1.5"><span className="text-[10px] font-black text-stone-400 uppercase tracking-widest">No Section</span></div>}
+          {noSection.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+          {prjSections.map(sec=>{
+            const secTasks=inSection(sec.id);
+            return(
+              <div key={sec.id} className="mt-1">
+                <div className="px-4 py-2 flex items-center justify-between bg-stone-50">
+                  <span className="text-[10px] font-black text-stone-500 uppercase tracking-widest">📂 {sec.name} ({secTasks.length})</span>
+                  <button onClick={()=>setSecMenu(secMenu===sec.id?null:sec.id)} className="text-stone-300 text-xs px-1">⋯</button>
+                </div>
+                {secMenu===sec.id&&(
+                  <div className="px-4 py-2 flex gap-2 bg-stone-50">
+                    <input defaultValue={sec.name} onBlur={e=>renameSection(sec.id,e.target.value.trim()||sec.name)} className="flex-1 px-2 py-1.5 text-xs border border-stone-200 rounded-lg bg-white"/>
+                    <button onClick={()=>delSection(sec.id)} className="text-xs text-red-500 font-bold px-2">Delete</button>
+                  </div>
+                )}
+                {secTasks.length===0&&<p className="px-4 py-2 text-[11px] text-stone-300">No tasks yet</p>}
+                {secTasks.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+              </div>
+            );
+          })}
+        </React.Fragment>
+      )}
+
+      {/* Kanban view: sections as columns, tap a task to move it (via task modal's Section picker) */}
+      {viewMode==='kanban'&&active.length>0&&(
+        <div className="flex gap-3 px-4 overflow-x-auto pb-2" style={{scrollbarWidth:'none'}}>
+          <div className="flex-shrink-0 bg-stone-50 rounded-2xl p-2" style={{width:220}}>
+            <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">No Section · {noSection.length}</p>
+            {noSection.map(t=>(
+              <div key={t.id} onClick={()=>onEdit(t)} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm">
+                <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
+                {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
+              </div>
+            ))}
+          </div>
+          {prjSections.map(sec=>(
+            <div key={sec.id} className="flex-shrink-0 bg-stone-50 rounded-2xl p-2" style={{width:220}}>
+              <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">{sec.name} · {inSection(sec.id).length}</p>
+              {inSection(sec.id).map(t=>(
+                <div key={t.id} onClick={()=>onEdit(t)} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm">
+                  <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
+                  {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {selectMode&&active.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
       {done.length>0&&(
         <div className="mt-2">
           <button onClick={()=>setShowDone(!showDone)} className="w-full px-4 py-2.5 flex items-center justify-between text-xs font-black text-stone-400 uppercase tracking-widest bg-white">
@@ -869,7 +980,7 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
 }
 
 /* ── Label View ──────────────────────────────────────── */
-function LabelView({lbl,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projects,selectMode,setSelectMode,selected,onSelect}){
+function LabelView({lbl,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projects,selectMode,selected,onSelect,onLongPress}){
   const active=sortDP(tasks.filter(t=>t.status!=='completed'&&t.status!=='archived'));
   return(
     <div className="pb-24">
@@ -877,10 +988,10 @@ function LabelView({lbl,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projec
         <button onClick={onBack} className="text-stone-400 text-xl font-bold mr-1">‹</button>
         <span className="text-xl">🏷️</span>
         <h2 className="text-xl font-black text-stone-900 flex-1"># {lbl}</h2>
-        {active.length>0&&<button onClick={()=>setSelectMode&&setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
       </div>
       {!active.length&&<div className="text-center py-12"><div style={{fontSize:40}}>🏷️</div><p className="text-sm font-bold text-stone-500 mt-2">No tasks with #{lbl}</p></div>}
-      {active.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject showCreated selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect}/>)}
+      {active.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject showCreated selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+      {selectMode&&active.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
     </div>
   );
 }
@@ -904,8 +1015,53 @@ function SearchView({q,setQ,results,onComplete,onEdit,onToggleSub,labels,project
   );
 }
 
+/* ── Scheduled row (shared by Overdue + day-by-day sections) ── */
+function SchedRow({t,projects,selectMode,isSelected,onSelect,onComplete,onEdit,onLongPress,overdue}){
+  const PRI_DOT={P1:'#ef4444',P2:'#f97316',P3:'#3b82f6',P4:'#d1d5db'};
+  const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
+  const ep=effPri(t);
+  const dotColor=PRI_DOT[ep]||'#e5e7eb';
+  const subs=t.subtasks||[];
+  const lpTimer=useRef(null);
+  const lpFired=useRef(false);
+  const startLP=()=>{lpFired.current=false;lpTimer.current=setTimeout(()=>{lpFired.current=true;if(navigator.vibrate)navigator.vibrate(15);onLongPress&&onLongPress(t.id)},450)};
+  const cancelLP=()=>{if(lpTimer.current){clearTimeout(lpTimer.current);lpTimer.current=null}};
+  const handleClick=()=>{if(lpFired.current){lpFired.current=false;return}selectMode?onSelect&&onSelect(t.id):onEdit(t)};
+  return(
+    <div className={'flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50 '+(isSelected?'bg-emerald-50':'')} onClick={handleClick} onTouchStart={startLP} onTouchEnd={cancelLP} onTouchMove={cancelLP} onMouseDown={startLP} onMouseUp={cancelLP} onMouseLeave={cancelLP}>
+      {selectMode?(
+        <div className={'w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+          {isSelected&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+        </div>
+      ):(
+        <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className="w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center" style={{borderColor:dotColor}}>
+          <span className="w-2 h-2 rounded-full" style={{background:dotColor}}/>
+        </button>
+      )}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm text-stone-800 font-medium leading-snug">{t.text}</p>
+        <div className="flex items-center justify-between mt-0.5 gap-2">
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            {overdue?(
+              <span className="text-[11px] text-red-500 font-semibold">📅 {fmtFull(t.dueDate)}{t.dueTime?' ⏰ '+fmtTime(t.dueTime):''}{t.recurring?' 🔄':''}</span>
+            ):(
+              <React.Fragment>
+                {t.dueTime&&<span className="text-[10px] text-stone-400 font-semibold">⏰ {fmtTime(t.dueTime)}</span>}
+                {subs.length>0&&<span className="text-[10px] text-stone-400">▸ {subs.filter(s=>s.done).length}/{subs.length}</span>}
+                {t.recurring&&<span className="text-[10px] text-teal-500">🔄</span>}
+                {(t.labels||[]).slice(0,1).map(l=><span key={l} className="text-[10px] text-stone-400">#{l}</span>)}
+              </React.Fragment>
+            )}
+          </div>
+          {prj&&<span className="text-[11px] text-stone-400 font-medium flex-shrink-0">{prj.name} #</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Scheduled View ──────────────────────────────────── */
-function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,selectMode,setSelectMode,selected,onSelect}){
+function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,selectMode,selected,onSelect,onLongPress}){
   const PRI_DOT={P1:'#ef4444',P2:'#f97316',P3:'#3b82f6',P4:'#d1d5db'};
   const today=new Date(); today.setHours(0,0,0,0);
   const todayStr=todayISO();
@@ -962,7 +1118,6 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
           <h2 className="text-2xl font-black text-stone-900">{monthLabel()}</h2>
           <span className="text-stone-400 text-sm">▾</span>
         </div>
-        {tasks.length>0&&<button onClick={()=>setSelectMode&&setSelectMode(!selectMode)} className={'text-xs font-bold px-3 py-1.5 rounded-xl border '+(selectMode?'bg-stone-800 text-white border-stone-800':'bg-white text-stone-500 border-stone-200')}>{selectMode?'✕':'Select'}</button>}
       </div>
 
       {/* Week strip */}
@@ -1014,33 +1169,7 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
                 <button onClick={()=>setShowOverdue(!showOverdue)} className="text-stone-400 text-sm">{showOverdue?'▾':'▸'}</button>
               </div>
             </div>
-            {showOverdue&&overdue.map(t=>{
-              const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
-              const ep=effPri(t);
-              const dotColor=PRI_DOT[ep]||'#e5e7eb';
-              return(
-                <div key={t.id} className={'flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50 '+(selected&&selected.includes(t.id)?'bg-emerald-50':'')} onClick={()=>selectMode?onSelect&&onSelect(t.id):onEdit(t)}>
-                  {selectMode?(
-                    <div className={'w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(selected&&selected.includes(t.id)?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
-                      {selected&&selected.includes(t.id)&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                    </div>
-                  ):(
-                    <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}}
-                      className="w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center flex-shrink-0"
-                      style={{borderColor:dotColor}}>
-                      <span className="w-2 h-2 rounded-full" style={{background:dotColor}}/>
-                    </button>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-stone-800 font-medium leading-snug">{t.text}</p>
-                    <div className="flex items-center justify-between mt-0.5">
-                      <span className="text-[11px] text-red-500 font-semibold">📅 {fmtFull(t.dueDate)}{t.recurring?' 🔄':''}</span>
-                      {prj&&<span className="text-[11px] text-stone-400 font-medium">{prj.name} #</span>}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+            {showOverdue&&overdue.map(t=><SchedRow key={t.id} t={t} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onComplete={onComplete} onEdit={onEdit} onLongPress={onLongPress} overdue/>)}
           </div>
         )}
 
@@ -1062,38 +1191,7 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
                 <span className="text-stone-400 text-xs">{collapsed?'▸':'▾'}</span>
               </button>
               {/* Tasks */}
-              {!collapsed&&visible.map(t=>{
-                const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
-                const ep=effPri(t);
-                const dotColor=PRI_DOT[ep]||'#e5e7eb';
-                const subs=t.subtasks||[];
-                return(
-                  <div key={t.id} className={'flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50 '+(selected&&selected.includes(t.id)?'bg-emerald-50':'')} onClick={()=>selectMode?onSelect&&onSelect(t.id):onEdit(t)}>
-                    {selectMode?(
-                      <div className={'w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(selected&&selected.includes(t.id)?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
-                        {selected&&selected.includes(t.id)&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                      </div>
-                    ):(
-                      <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}}
-                        className="w-5 h-5 rounded-full border-2 flex-shrink-0 flex items-center justify-center"
-                        style={{borderColor:dotColor}}>
-                        <span className="w-2 h-2 rounded-full" style={{background:dotColor}}/>
-                      </button>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-stone-800 font-medium leading-snug">{t.text}</p>
-                      <div className="flex items-center justify-between mt-0.5 gap-2">
-                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                          {subs.length>0&&<span className="text-[10px] text-stone-400">▸ {subs.filter(s=>s.done).length}/{subs.length}</span>}
-                          {t.recurring&&<span className="text-[10px] text-teal-500">🔄</span>}
-                          {(t.labels||[]).slice(0,1).map(l=><span key={l} className="text-[10px] text-stone-400">#{l}</span>)}
-                        </div>
-                        {prj&&<span className="text-[11px] text-stone-400 font-medium flex-shrink-0">{prj.name} #</span>}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+              {!collapsed&&visible.map(t=><SchedRow key={t.id} t={t} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onComplete={onComplete} onEdit={onEdit} onLongPress={onLongPress}/>)}
               {/* "N more" toggle */}
               {!collapsed&&extra>0&&(
                 <button onClick={()=>setCollapsedDays(s=>({...s,[date]:false}))} className="w-full flex items-center gap-2 px-4 py-2.5 text-xs text-stone-400 font-semibold bg-white border-b border-stone-50">
@@ -1219,25 +1317,43 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
 }
 
 /* ── Quick Add ───────────────────────────────────────── */
-function QuickAdd({onAdd,onClose,projects,labels,ctxProject}){
+// Strip a leading /SectionName token that matches a known section; returns {text,sectionName}
+const parseSection=(v,secList)=>{
+  const sm=v.match(/\/([a-zA-Z0-9_]+)/);
+  if(!sm||!secList||!secList.length)return{text:v,sectionName:null};
+  const match=secList.find(s=>s.name.toLowerCase()===sm[1].toLowerCase());
+  if(!match)return{text:v,sectionName:null};
+  return{text:v.replace(sm[0],'').replace(/\s+/g,' ').trim(),sectionName:match.name};
+};
+function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections}){
   const [text,setText]=useState('');
-  const [parsed,setParsed]=useState({text:'',dueDate:null,priority:null,labels:[],project:ctxProject?ctxProject.name:null});
+  const [parsed,setParsed]=useState({text:'',dueDate:null,dueTime:null,priority:null,labels:[],project:ctxProject?ctxProject.name:null,sectionName:null});
   const [suggs,setSuggs]=useState([]);
-  const [suggMode,setSuggMode]=useState(null); // 'tag'|'project'
+  const [suggMode,setSuggMode]=useState(null); // 'tag'|'project'|'section'
   const ref=useRef(null);
   useEffect(()=>{ref.current&&ref.current.focus()},[]);
+  const secListFor=projName=>{const po=projects.find(p=>p.name===projName);return po?(sections||[]).filter(s=>s.projectId===po.id):[]};
   const handleChange=v=>{
-    setText(v);const p=parseNL(v,projects,labels);setParsed({...p,project:p.project||(ctxProject?ctxProject.name:null)});
+    setText(v);
+    const p=parseNL(v,projects,labels);
+    const projName=p.project||(ctxProject?ctxProject.name:null);
+    const secList=secListFor(projName);
+    const sp=parseSection(p.text,secList);
+    setParsed({...p,text:sp.text,project:projName,sectionName:sp.sectionName});
     const hm=v.match(/#([a-zA-Z0-9_]*)$/);
     const am=v.match(/@([a-zA-Z0-9_ ]*)$/);
+    const sm=v.match(/\/([a-zA-Z0-9_]*)$/);
     if(hm){setSuggMode('tag');setSuggs(labels.filter(l=>l.toLowerCase().startsWith(hm[1].toLowerCase())).slice(0,5))}
     else if(am){setSuggMode('project');const partial=am[1].trim().toLowerCase();const matches=partial?projects.filter(p=>p.name.toLowerCase().includes(partial)):projects;setSuggs(matches.slice(0,5))}
+    else if(sm&&secList.length){setSuggMode('section');setSuggs(secList.filter(s=>s.name.toLowerCase().startsWith(sm[1].toLowerCase())).slice(0,5))}
     else {setSuggs([]);setSuggMode(null)}
   };
   const applySugg=s=>{
     setText(prev=>{
-      const nv=suggMode==='tag'?prev.replace(/#([a-zA-Z0-9_]*)$/,'#'+s+' '):prev.replace(/@([a-zA-Z0-9_ ]*)$/,'@'+s+' ');
-      setParsed(parseNL(nv,projects,labels));
+      const nv=suggMode==='tag'?prev.replace(/#([a-zA-Z0-9_]*)$/,'#'+s+' '):
+        suggMode==='project'?prev.replace(/@([a-zA-Z0-9_ ]*)$/,'@'+s+' '):
+        prev.replace(/\/([a-zA-Z0-9_]*)$/,'/'+(s.name||s)+' ');
+      handleChange(nv);
       return nv;
     });
     setSuggs([]);setSuggMode(null);
@@ -1246,10 +1362,13 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject}){
     if(!text.trim())return;
     const p=parseNL(text,projects,labels);
     const proj=p.project||(ctxProject?ctxProject.name:null);
-    onAdd({text:p.text||text.trim(),dueDate:p.dueDate,priority:p.priority,labels:p.labels,project:proj,type:'task',status:proj?'active':'inbox'});
+    const secList=secListFor(proj);
+    const sp=parseSection(p.text,secList);
+    const secObj=secList.find(s=>s.name===sp.sectionName);
+    onAdd({text:sp.text||text.trim(),dueDate:p.dueDate,dueTime:p.dueTime,priority:p.priority,labels:p.labels,project:proj,sectionId:secObj?secObj.id:null,type:'task',status:proj?'active':'inbox'});
     onClose();
   };
-  const hasMeta=parsed.dueDate||parsed.priority||parsed.labels.length>0||parsed.project||ctxProject;
+  const hasMeta=parsed.dueDate||parsed.priority||parsed.labels.length>0||parsed.project||parsed.sectionName||ctxProject;
   return(
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/40" onClick={onClose}/>
@@ -1269,17 +1388,24 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject}){
             {suggs.map(p=><button key={p.id||p.name} onClick={()=>applySugg(p.name)} className="text-xs text-white px-2 py-1 rounded-lg font-semibold" style={{background:p.color||'#6366f1'}}>{p.parentId?'↳ ':'📁 '}{p.name}</button>)}
           </div>
         )}
+        {suggs.length>0&&suggMode==='section'&&(
+          <div className="flex gap-1.5 flex-wrap mb-3 p-2 bg-violet-50 rounded-xl border border-violet-200">
+            <span className="text-[10px] text-violet-600 w-full font-semibold">💡 Tap to complete section:</span>
+            {suggs.map(sec=><button key={sec.id} onClick={()=>applySugg(sec)} className="text-xs bg-white text-violet-700 border border-violet-200 px-2 py-1 rounded-lg font-semibold">📂 {sec.name}</button>)}
+          </div>
+        )}
         {/* NLP preview + context project */}
         {hasMeta&&(
           <div className="flex flex-wrap gap-2 mb-3 p-3 bg-stone-50 rounded-xl">
             {ctxProject&&!parsed.project&&<span className="text-xs font-semibold px-2 py-1 rounded-lg text-white" style={{background:ctxProject.color||'#6366f1'}}>📁 {ctxProject.name}</span>}
-            {parsed.dueDate&&<span className={'text-xs font-semibold px-2 py-1 rounded-lg '+(parsed.dueDate===todayISO()?'bg-emerald-100 text-emerald-700':isOverdue(parsed.dueDate)?'bg-red-100 text-red-600':'bg-stone-200 text-stone-600')}>📅 {fmtDate(parsed.dueDate)}</span>}
+            {parsed.dueDate&&<span className={'text-xs font-semibold px-2 py-1 rounded-lg '+(parsed.dueDate===todayISO()?'bg-emerald-100 text-emerald-700':isOverdue(parsed.dueDate)?'bg-red-100 text-red-600':'bg-stone-200 text-stone-600')}>📅 {fmtDate(parsed.dueDate)}{parsed.dueTime?' '+fmtTime(parsed.dueTime):''}</span>}
             {parsed.priority&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-700" style={{color:PRI_COLOR[parsed.priority]}}>● {parsed.priority}</span>}
             {parsed.project&&<span className="text-xs font-semibold px-2 py-1 rounded-lg text-white" style={{background:projects.find(p=>p.name===parsed.project)?.color||'#6366f1'}}>📁 {parsed.project}</span>}
+            {parsed.sectionName&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-violet-100 text-violet-700">📂 {parsed.sectionName}</span>}
             {parsed.labels.map(l=><span key={l} className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-600"># {l}</span>)}
           </div>
         )}
-        <div className="text-[11px] text-stone-400 mb-3">Tip: <span className="font-semibold text-stone-500">tomorrow</span> · <span className="font-semibold text-stone-500">@Project</span> · <span className="font-semibold text-stone-500">#label</span> · <span className="font-semibold text-stone-500">p1</span> · <span className="font-semibold text-stone-500">mon/tue/wed…</span></div>
+        <div className="text-[11px] text-stone-400 mb-3">Tip: <span className="font-semibold text-stone-500">tomorrow 3pm</span> · <span className="font-semibold text-stone-500">@Project</span> · <span className="font-semibold text-stone-500">/Section</span> · <span className="font-semibold text-stone-500">#label</span> · <span className="font-semibold text-stone-500">p1</span></div>
         <button onClick={handleAdd} disabled={!text.trim()} className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700 disabled:opacity-40">
           Add Task
         </button>
@@ -1289,10 +1415,11 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject}){
 }
 
 /* ── Task Modal (full edit) ──────────────────────────── */
-function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj}){
-  const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null,notes:task.notes||''});
+function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj,sections}){
+  const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null,notes:task.notes||'',sectionId:task.sectionId||null});
   const [newLbl,setNewLbl]=useState('');const [newSub,setNewSub]=useState('');
   const s=(k,v)=>setT(p=>({...p,[k]:v}));
+  const setProject=name=>{const np=t.project===name?null:name;setT(p=>({...p,project:np,sectionId:np!==p.project?null:p.sectionId}))};
   const qd=[{l:'Today',v:todayISO()},{l:'Tomorrow',v:addDays(1)},{l:'This Week',v:addDays(6)},{l:'Next Month',v:addDays(30)},{l:'Clear',v:null}];
   const addL=()=>{const l=newLbl.trim();if(!l||labels.includes(l))return;onAddLbl(l);s('labels',[...(t.labels||[]),l]);setNewLbl('')};
   const addSub=()=>{if(!newSub.trim())return;s('subtasks',[...(t.subtasks||[]),{id:uid(),text:newSub.trim(),done:false}]);setNewSub('')};
@@ -1300,6 +1427,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
   const delSub=i=>s('subtasks',(t.subtasks||[]).filter((_,j)=>j!==i));
   const related=t.labels&&t.labels.length?allTasks.filter(r=>r.id!==t.id&&!['archived','completed'].includes(r.status)&&(r.labels||[]).some(l=>(t.labels||[]).includes(l))).slice(0,4):[];
   const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
+  const prjSections=prj?(sections||[]).filter(sec=>sec.projectId===prj.id):[];
   return(
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/50" onClick={onClose}/>
@@ -1319,7 +1447,10 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
             <div>
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Due Date</p>
               <div className="flex flex-wrap gap-1.5 mb-2">{qd.map(({l,v})=><Chip key={l} on={t.dueDate===v&&v!==null} click={()=>s('dueDate',v)}>{l}</Chip>)}</div>
-              <input type="date" value={t.dueDate||''} onChange={e=>s('dueDate',e.target.value||null)} className="w-full px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+              <div className="flex gap-2">
+                <input type="date" value={t.dueDate||''} onChange={e=>s('dueDate',e.target.value||null)} className="flex-1 px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+                <input type="time" value={t.dueTime||''} onChange={e=>s('dueTime',e.target.value||null)} disabled={!t.dueDate} className="w-28 px-2 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700 disabled:opacity-40"/>
+              </div>
             </div>
             {/* Priority */}
             <div>
@@ -1339,9 +1470,9 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
             <div>
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Project</p>
               <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.project} click={()=>s('project',null)}>📥 Inbox</Chip>
+                <Chip on={!t.project} click={()=>setProject(null)}>📥 Inbox</Chip>
                 {prjTree(projects).map(p=>(
-                  <button key={p.id||p.name} onClick={()=>s('project',t.project===p.name?null:p.name)}
+                  <button key={p.id||p.name} onClick={()=>setProject(p.name)}
                     className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(t.project===p.name?'text-white':'bg-white text-stone-600 border-stone-200')}
                     style={{background:t.project===p.name?p.color:'',borderColor:t.project===p.name?p.color:''}}>
                     {p.depth>0?'↳ '.repeat(1):''}{p.name}
@@ -1349,6 +1480,16 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
                 ))}
               </div>
             </div>
+            {/* Section (only when a project with sections is selected) */}
+            {prj&&prjSections.length>0&&(
+              <div>
+                <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Section</p>
+                <div className="flex flex-wrap gap-1.5">
+                  <Chip on={!t.sectionId} click={()=>s('sectionId',null)}>No section</Chip>
+                  {prjSections.map(sec=><Chip key={sec.id} on={t.sectionId===sec.id} click={()=>s('sectionId',t.sectionId===sec.id?null:sec.id)}>📂 {sec.name}</Chip>)}
+                </div>
+              </div>
+            )}
             {/* Recurrence */}
             <div>
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Recurrence</p>
