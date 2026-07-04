@@ -27,7 +27,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const {useState,useEffect,useCallback,useRef}=React;
+const {useState,useEffect,useCallback,useRef,useMemo}=React;
 
 /* ── Utilities ──────────────────────────────────────── */
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
@@ -399,7 +399,7 @@ function App(){
         {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects} customFilters={customFilters} onSaveFilters={persistFilters}/>}
         {view.tab==='customFilter' &&<CustomFilterView filter={view.filter} tasks={active} projects={projects} onBack={()=>nav('filters')} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} onDelFilter={id=>{persistFilters(customFilters.filter(f=>f.id!==id));nav('filters')}}/>}
         {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
-        {view.tab==='project' &&<ProjectView prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection}/>}
+        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection}/>}
         {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
@@ -514,7 +514,7 @@ function App(){
       </nav>
 
       {/* Quick Add */}
-      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels} ctxProject={ctxProject} sections={sections}/>}
+      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels} ctxProject={ctxProject} sections={sections} allTasks={tasks}/>}
       {/* Task Edit Modal */}
       {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections}/>}
     </div>
@@ -1018,7 +1018,8 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
   const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const [showDone,setShowDone]=useState(false);
-  const [viewMode,setViewMode]=useState('list'); // 'list' | 'kanban'
+  const [viewMode,setViewModeRaw]=useState(()=>ls.get('viewMode_'+prj.id,'list')); // 'list' | 'kanban' — remembered per project, survives reload
+  const setViewMode=m=>{setViewModeRaw(m);ls.set('viewMode_'+prj.id,m)};
   const [addingSection,setAddingSection]=useState(false);
   const [newSecName,setNewSecName]=useState('');
   const [secMenu,setSecMenu]=useState(null);
@@ -1174,9 +1175,12 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
           <div data-colkey="none" className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol==='none'?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
             <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">No Section · {noSection.length}</p>
             {noSection.map(t=>(
-              <div key={t.id} onMouseDown={e=>onCardDown(e,t)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none">
-                <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
-                {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
+              <div key={t.id} onMouseDown={e=>onCardDown(e,t)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
+                <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
+                  {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
+                </div>
               </div>
             ))}
           </div>
@@ -1184,9 +1188,12 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
             <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
               <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">{sec.name} · {inSection(sec.id).length}</p>
               {inSection(sec.id).map(t=>(
-                <div key={t.id} onMouseDown={e=>onCardDown(e,t)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none">
-                  <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
-                  {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
+                <div key={t.id} onMouseDown={e=>onCardDown(e,t)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
+                  <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
+                    {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1593,6 +1600,189 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
   );
 }
 
+/* ── Date + Time Picker (full-screen, Todoist-style) ──── */
+const isoOfDate=d=>{const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');return y+'-'+m+'-'+day};
+const buildMonthCells=m=>{
+  const year=m.getFullYear(),month=m.getMonth();
+  const first=new Date(year,month,1);
+  const startOffset=(first.getDay()+6)%7;
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const cells=Array(startOffset).fill(null);
+  for(let d=1;d<=daysInMonth;d++)cells.push(new Date(year,month,d));
+  return cells;
+};
+const MONTH_NAMES_FULL=['January','February','March','April','May','June','July','August','September','October','November','December'];
+const DAY_SHORT3=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+function DateTimePicker({initDate,initTime,initRecur,taskDates,onSave,onClose,showRepeat=true}){
+  const [selDate,setSelDate]=useState(initDate||null);
+  const [selTime,setSelTime]=useState(initTime||null);
+  const [selRecur,setSelRecur]=useState(initRecur||null);
+  const [showTime,setShowTime]=useState(false);
+  const [monthCount,setMonthCount]=useState(12);
+  const today=new Date();today.setHours(0,0,0,0);
+  const todayStr=todayISO();
+  const dow=today.getDay();
+  const quickOpts=useMemo(()=>{
+    const opts=[];
+    const mk=(days)=>{const d=new Date(today);d.setDate(d.getDate()+days);return d};
+    const tmrw=mk(1);
+    opts.push({ico:'☀️',l:'Tomorrow',v:isoOfDate(tmrw),sub:DAY_SHORT3[tmrw.getDay()]});
+    if(dow>=1&&dow<=4){const fri=mk(5-dow);opts.push({ico:'📆',l:'Later this week',v:isoOfDate(fri),sub:DAY_SHORT3[fri.getDay()]})}
+    if(dow>=1&&dow<=5){const sat=mk(6-dow);opts.push({ico:'🛋️',l:'This weekend',v:isoOfDate(sat),sub:DAY_SHORT3[sat.getDay()]})}
+    else{const nSat=mk((6-dow+7)%7||7);opts.push({ico:'🛋️',l:'Next weekend',v:isoOfDate(nSat),sub:'Sat ('+MONTH_NAMES_FULL[nSat.getMonth()].slice(0,3)+' '+nSat.getDate()+')'})}
+    const nMon=mk(((8-dow)%7)||7);
+    opts.push({ico:'➡️',l:'Next week',v:isoOfDate(nMon),sub:DAY_SHORT3[nMon.getDay()]});
+    opts.push({ico:'🚫',l:'No date',v:null,sub:''});
+    return opts;
+  },[]);
+  const months=useMemo(()=>{const arr=[];for(let i=0;i<monthCount;i++)arr.push(new Date(today.getFullYear(),today.getMonth()+i,1));return arr},[monthCount]);
+  const onScroll=e=>{const el=e.target;if(el.scrollHeight-el.scrollTop-el.clientHeight<400)setMonthCount(c=>c+6)};
+  const taskCountFor=iso=>(taskDates||[]).filter(d=>d===iso).length;
+  const save=()=>{onSave({dueDate:selDate,dueTime:selDate?selTime:null,recurring:selRecur});onClose()};
+  if(showTime)return<TimePicker initial={selTime} onSave={t=>{setSelTime(t);setShowTime(false)}} onClose={()=>setShowTime(false)}/>;
+  return(
+    <div className="fixed inset-0 z-50 bg-white flex flex-col">
+      <div className="flex items-center justify-between px-3 pt-4 pb-3 flex-shrink-0 border-b border-stone-100">
+        <button onClick={onClose} className="text-stone-400 text-2xl font-bold px-2">‹</button>
+        <span className="text-base font-black text-stone-900">Date</span>
+        <button onClick={save} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white flex-shrink-0 mr-1">
+          <svg width="16" height="12" viewBox="0 0 16 12" fill="none"><path d="M1 6L5.5 10.5L15 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+        </button>
+      </div>
+      <div className="px-4 py-3 flex-shrink-0">
+        <div className="flex items-center gap-2 bg-stone-100 rounded-2xl px-4 py-3">
+          <span>📅</span><span className="text-sm font-semibold text-stone-700">{selDate?fmtFull(selDate):'No date'}{selTime?' · '+fmtTime(selTime):''}</span>
+        </div>
+      </div>
+      <div className="flex-shrink-0">
+        {quickOpts.map(o=>(
+          <button key={o.l} onClick={()=>setSelDate(o.v)} className={'w-full flex items-center justify-between px-4 py-3 border-b border-stone-50 '+(selDate===o.v?'bg-emerald-50':'')}>
+            <span className="flex items-center gap-3 text-sm font-semibold text-stone-700">{o.ico} {o.l}</span>
+            <span className="text-xs text-stone-400">{o.sub}</span>
+          </button>
+        ))}
+      </div>
+      <div onScroll={onScroll} className="flex-1 overflow-y-auto px-3 pt-2">
+        {selDate&&<p className="text-center text-xs text-stone-400 pb-2">{fmtFull(selDate)} · {taskCountFor(selDate)} task{taskCountFor(selDate)!==1?'s':''}</p>}
+        {months.map((m,mi)=>(
+          <div key={mi} className="mb-4">
+            <p className="text-center text-sm font-black text-stone-700 py-2">{MONTH_NAMES_FULL[m.getMonth()]} {m.getFullYear()}</p>
+            <div className="grid grid-cols-7 mb-1">{['M','T','W','T','F','S','S'].map((d,i)=><div key={i} className="text-center text-[10px] font-bold text-stone-400 py-1">{d}</div>)}</div>
+            <div className="grid grid-cols-7 gap-y-1">
+              {buildMonthCells(m).map((d,i)=>{
+                if(!d)return<div key={i}/>;
+                const iso=isoOfDate(d);
+                const isToday=iso===todayStr;
+                const isSel=iso===selDate;
+                const isPast=iso<todayStr;
+                const hasTasks=taskCountFor(iso)>0;
+                return(
+                  <button key={i} onClick={()=>setSelDate(iso)} className="flex flex-col items-center py-1">
+                    <span className={'w-9 h-9 flex items-center justify-center rounded-full text-sm font-bold '+(isSel?'bg-red-500 text-white':isToday?'bg-stone-200 text-stone-800':isPast?'text-stone-300':'text-stone-700')}>{d.getDate()}</span>
+                    {hasTasks&&!isSel&&<span className="w-1 h-1 rounded-full bg-stone-300 mt-0.5"/>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      <button onClick={()=>setShowTime(true)} disabled={!selDate} className="flex items-center gap-3 px-4 py-3.5 border-t border-stone-100 flex-shrink-0 disabled:opacity-40">
+        <span>🕐</span><span className="text-sm font-semibold text-stone-700 flex-1 text-left">{selTime?fmtTime(selTime):'Add time'}</span>
+        {selTime&&<span onClick={ev=>{ev.stopPropagation();setSelTime(null)}} className="text-stone-300 text-lg px-2">×</span>}
+      </button>
+      {showRepeat&&(
+        <div className="px-4 py-3.5 border-t border-stone-100 flex-shrink-0">
+          <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">🔄 Repeat</p>
+          <div className="flex flex-wrap gap-1.5">
+            <Chip on={!selRecur} click={()=>setSelRecur(null)}>None</Chip>
+            {Object.entries(RECUR_OPT).map(([k,l])=><Chip key={k} on={selRecur===k} click={()=>setSelRecur(selRecur===k?null:k)}>{l}</Chip>)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+/* ── Time Picker (analog dial, full-screen) ─────────────── */
+function TimePicker({initial,onSave,onClose}){
+  const now=new Date();
+  const [h24,setH24]=useState(()=>initial?Number(initial.split(':')[0]):now.getHours());
+  const [min,setMin]=useState(()=>initial?Number(initial.split(':')[1]):Math.round(now.getMinutes()/5)*5%60);
+  const [mode,setMode]=useState('hour'); // 'hour' | 'minute'
+  const [native,setNative]=useState(false);
+  const clockRef=useRef(null);
+  const isPM=h24>=12;
+  const h12=((h24+11)%12)+1;
+  const setMeridiem=pm=>setH24(h=>{const base=h%12;return pm?base+12:base});
+  const hourNums=[12,1,2,3,4,5,6,7,8,9,10,11];
+  const minNums=[0,5,10,15,20,25,30,35,40,45,50,55];
+  const numbers=mode==='hour'?hourNums:minNums;
+  const selectedNum=mode==='hour'?h12:(Math.round(min/5)*5)%60;
+  const pickFromPoint=(clientX,clientY)=>{
+    const rect=clockRef.current.getBoundingClientRect();
+    const cx=rect.left+rect.width/2,cy=rect.top+rect.height/2;
+    let angle=Math.atan2(clientY-cy,clientX-cx)*180/Math.PI+90;
+    if(angle<0)angle+=360;
+    if(mode==='hour'){
+      let v=Math.round(angle/30)%12;if(v===0)v=12;
+      setH24(isPM?(v===12?12:v+12):(v===12?0:v));
+    } else {
+      let v=Math.round(angle/6)%60;
+      setMin(v);
+    }
+  };
+  const dragging=useRef(false);
+  const onDown=e=>{dragging.current=true;const pt=e.touches?e.touches[0]:e;pickFromPoint(pt.clientX,pt.clientY)};
+  const onMove=e=>{if(!dragging.current)return;e.preventDefault&&e.preventDefault();const pt=e.touches?e.touches[0]:e;pickFromPoint(pt.clientX,pt.clientY)};
+  const onUp=()=>{if(dragging.current&&mode==='hour')setMode('minute');dragging.current=false};
+  const R=110,C=140;
+  const angleFor=(i)=>i*30-90;
+  const save=()=>onSave(String(h24).padStart(2,'0')+':'+String(min).padStart(2,'0'));
+  return(
+    <div className="fixed inset-0 z-50 bg-white flex flex-col">
+      <div className="px-4 pt-5 pb-3 flex-shrink-0"><h2 className="text-lg font-black text-stone-900">Select time</h2></div>
+      <div className="flex items-center justify-center gap-2 px-4 pb-4 flex-shrink-0">
+        <button onClick={()=>setMode('hour')} className={'text-3xl font-black px-3 py-2 rounded-xl '+(mode==='hour'?'bg-red-50 text-red-500':'bg-stone-100 text-stone-700')}>{String(h12).padStart(2,'0')}</button>
+        <span className="text-3xl font-black text-stone-400">:</span>
+        <button onClick={()=>setMode('minute')} className={'text-3xl font-black px-3 py-2 rounded-xl '+(mode==='minute'?'bg-red-50 text-red-500':'bg-stone-100 text-stone-700')}>{String(min).padStart(2,'0')}</button>
+        <div className="flex flex-col gap-1 ml-2">
+          <button onClick={()=>setMeridiem(false)} className={'text-xs font-black px-3 py-1.5 rounded-lg '+(!isPM?'bg-stone-200 text-stone-800':'bg-stone-50 text-stone-400')}>AM</button>
+          <button onClick={()=>setMeridiem(true)} className={'text-xs font-black px-3 py-1.5 rounded-lg '+(isPM?'bg-red-500 text-white':'bg-stone-50 text-stone-400')}>PM</button>
+        </div>
+      </div>
+      {!native?(
+        <div className="flex-1 flex items-start justify-center pt-2">
+          <div ref={clockRef} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={()=>dragging.current=false} onTouchStart={onDown} onTouchMove={onMove} onTouchEnd={onUp} className="relative bg-stone-100 rounded-full flex-shrink-0" style={{width:280,height:280,touchAction:'none'}}>
+            <div className="absolute rounded-full bg-red-500" style={{width:8,height:8,left:C-4,top:C-4}}/>
+            {(()=>{const idx=numbers.indexOf(selectedNum);if(idx<0)return null;const rad=angleFor(idx)*Math.PI/180;const x=C+R*Math.cos(rad),y=C+R*Math.sin(rad);return<div className="absolute bg-red-500" style={{width:2,height:R-20,left:C-1,top:C,transformOrigin:'top',transform:'rotate('+(angleFor(idx)+90)+'deg)'}}/>;})()}
+            {numbers.map((n,i)=>{
+              const rad=angleFor(i)*Math.PI/180;
+              const x=C+R*Math.cos(rad),y=C+R*Math.sin(rad);
+              const sel=n===selectedNum;
+              return(
+                <button key={n} onClick={()=>{if(mode==='hour'){setH24(isPM?(n===12?12:n+12):(n===12?0:n));setMode('minute')}else{setMin(n)}}}
+                  className={'absolute flex items-center justify-center rounded-full text-sm font-bold '+(sel?'bg-red-500 text-white':'text-stone-700')}
+                  style={{width:32,height:32,left:x-16,top:y-16}}>{String(n).padStart(2,'0')}</button>
+              );
+            })}
+          </div>
+        </div>
+      ):(
+        <div className="flex-1 flex items-start justify-center pt-8">
+          <input type="time" value={String(h24).padStart(2,'0')+':'+String(min).padStart(2,'0')} onChange={e=>{const [hh,mm]=e.target.value.split(':').map(Number);if(!isNaN(hh))setH24(hh);if(!isNaN(mm))setMin(mm)}} className="text-2xl border border-stone-200 rounded-xl px-4 py-3"/>
+        </div>
+      )}
+      <div className="flex justify-center py-3 flex-shrink-0">
+        <button onClick={()=>setNative(!native)} className="w-11 h-11 rounded-full bg-stone-100 flex items-center justify-center text-lg">⌨</button>
+      </div>
+      <div className="flex justify-end gap-3 px-5 py-4 border-t border-stone-100 flex-shrink-0">
+        <button onClick={onClose} className="text-sm font-bold text-stone-400 px-4 py-2">Cancel</button>
+        <button onClick={save} className="text-sm font-black text-emerald-600 px-4 py-2">Okay</button>
+      </div>
+    </div>
+  );
+}
+
 /* ── Quick Add ───────────────────────────────────────── */
 // Strip a leading /SectionName token that matches a known section; returns {text,sectionName}
 const parseSection=(v,secList)=>{
@@ -1602,12 +1792,21 @@ const parseSection=(v,secList)=>{
   if(!match)return{text:v,sectionName:null};
   return{text:v.replace(sm[0],'').replace(/\s+/g,' ').trim(),sectionName:match.name};
 };
-function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections}){
+function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections,allTasks}){
   const [text,setText]=useState('');
   const [parsed,setParsed]=useState({text:'',dueDate:null,dueTime:null,priority:null,labels:[],project:ctxProject?ctxProject.name:null,sectionName:null});
   const [suggs,setSuggs]=useState([]);
   const [suggMode,setSuggMode]=useState(null); // 'tag'|'project'|'section'
   const ref=useRef(null);
+  // Manual overrides via pill pickers — `undefined` means "not manually touched, use NL-parsed value"
+  const [manDate,setManDate]=useState(undefined);
+  const [manTime,setManTime]=useState(undefined);
+  const [manRecur,setManRecur]=useState(undefined);
+  const [manPriority,setManPriority]=useState(undefined);
+  const [manLabels,setManLabels]=useState(undefined);
+  const [showDatePick,setShowDatePick]=useState(false);
+  const [showPriPick,setShowPriPick]=useState(false);
+  const [showLblPick,setShowLblPick]=useState(false);
   useEffect(()=>{ref.current&&ref.current.focus()},[]);
   const secListFor=projName=>{const po=projects.find(p=>p.name===projName);return po?(sections||[]).filter(s=>s.projectId===po.id):[]};
   const handleChange=v=>{
@@ -1642,10 +1841,19 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections}){
     const secList=secListFor(proj);
     const sp=parseSection(p.text,secList);
     const secObj=secList.find(s=>s.name===sp.sectionName);
-    onAdd({text:sp.text||text.trim(),dueDate:p.dueDate,dueTime:p.dueTime,priority:p.priority,labels:p.labels,project:proj,sectionId:secObj?secObj.id:null,type:'task',status:proj?'active':'inbox'});
+    const finalDate=manDate!==undefined?manDate:p.dueDate;
+    const finalTime=manTime!==undefined?manTime:p.dueTime;
+    const finalRecur=manRecur!==undefined?manRecur:null;
+    const finalPri=manPriority!==undefined?manPriority:p.priority;
+    const finalLbls=manLabels!==undefined?manLabels:p.labels;
+    onAdd({text:sp.text||text.trim(),dueDate:finalDate,dueTime:finalDate?finalTime:null,recurring:finalRecur,priority:finalPri,labels:finalLbls,project:proj,sectionId:secObj?secObj.id:null,type:'task',status:proj?'active':'inbox'});
     onClose();
   };
-  const hasMeta=parsed.dueDate||parsed.priority||parsed.labels.length>0||parsed.project||parsed.sectionName||ctxProject;
+  const dispDate=manDate!==undefined?manDate:parsed.dueDate;
+  const dispTime=manTime!==undefined?manTime:parsed.dueTime;
+  const dispPri=manPriority!==undefined?manPriority:parsed.priority;
+  const dispLbls=manLabels!==undefined?manLabels:parsed.labels;
+  const hasMeta=dispDate||dispPri||dispLbls.length>0||parsed.project||parsed.sectionName||ctxProject;
   return(
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/40" onClick={onClose}/>
@@ -1671,15 +1879,21 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections}){
             {suggs.map(sec=><button key={sec.id} onClick={()=>applySugg(sec)} className="text-xs bg-white text-violet-700 border border-violet-200 px-2 py-1 rounded-lg font-semibold">📂 {sec.name}</button>)}
           </div>
         )}
+        {/* Minimal pill row — Todoist-style manual pickers, alongside natural-language typing */}
+        <div className="flex gap-2 flex-wrap mb-3">
+          <button onClick={()=>setShowDatePick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(dispDate?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-white text-stone-500 border-stone-200')}>📅 {dispDate?fmtDate(dispDate)+(dispTime?' '+fmtTime(dispTime):''):'Date'}</button>
+          <button onClick={()=>setShowPriPick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(dispPri?'bg-white border-stone-200':'bg-white text-stone-500 border-stone-200')} style={dispPri?{color:PRI_COLOR[dispPri]}:{}}>🚩 {dispPri||'Priority'}</button>
+          <button onClick={()=>setShowLblPick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(dispLbls.length?'bg-stone-100 text-stone-700 border-stone-200':'bg-white text-stone-500 border-stone-200')}>🏷️ {dispLbls.length?dispLbls.map(l=>'#'+l).join(' '):'Labels'}</button>
+        </div>
         {/* NLP preview + context project */}
         {hasMeta&&(
           <div className="flex flex-wrap gap-2 mb-3 p-3 bg-stone-50 rounded-xl">
             {ctxProject&&!parsed.project&&<span className="text-xs font-semibold px-2 py-1 rounded-lg text-white" style={{background:ctxProject.color||'#6366f1'}}>📁 {ctxProject.name}</span>}
-            {parsed.dueDate&&<span className={'text-xs font-semibold px-2 py-1 rounded-lg '+(parsed.dueDate===todayISO()?'bg-emerald-100 text-emerald-700':isOverdue(parsed.dueDate)?'bg-red-100 text-red-600':'bg-stone-200 text-stone-600')}>📅 {fmtDate(parsed.dueDate)}{parsed.dueTime?' '+fmtTime(parsed.dueTime):''}</span>}
-            {parsed.priority&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-700" style={{color:PRI_COLOR[parsed.priority]}}>● {parsed.priority}</span>}
+            {dispDate&&<span className={'text-xs font-semibold px-2 py-1 rounded-lg '+(dispDate===todayISO()?'bg-emerald-100 text-emerald-700':isOverdue(dispDate)?'bg-red-100 text-red-600':'bg-stone-200 text-stone-600')}>📅 {fmtDate(dispDate)}{dispTime?' '+fmtTime(dispTime):''}</span>}
+            {dispPri&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-700" style={{color:PRI_COLOR[dispPri]}}>● {dispPri}</span>}
             {parsed.project&&<span className="text-xs font-semibold px-2 py-1 rounded-lg text-white" style={{background:projects.find(p=>p.name===parsed.project)?.color||'#6366f1'}}>📁 {parsed.project}</span>}
             {parsed.sectionName&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-violet-100 text-violet-700">📂 {parsed.sectionName}</span>}
-            {parsed.labels.map(l=><span key={l} className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-600"># {l}</span>)}
+            {dispLbls.map(l=><span key={l} className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-600"># {l}</span>)}
           </div>
         )}
         <div className="text-[11px] text-stone-400 mb-3">Tip: <span className="font-semibold text-stone-500">tomorrow 3pm</span> · <span className="font-semibold text-stone-500">@Project</span> · <span className="font-semibold text-stone-500">/Section</span> · <span className="font-semibold text-stone-500">#label</span> · <span className="font-semibold text-stone-500">p1</span></div>
@@ -1687,6 +1901,31 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections}){
           Add Task
         </button>
       </div>
+      {showDatePick&&<DateTimePicker initDate={dispDate} initTime={dispTime} initRecur={manRecur!==undefined?manRecur:null} taskDates={(allTasks||[]).map(t=>t.dueDate).filter(Boolean)} onSave={({dueDate,dueTime,recurring})=>{setManDate(dueDate);setManTime(dueTime);setManRecur(recurring)}} onClose={()=>setShowDatePick(false)}/>}
+      {showPriPick&&(
+        <div className="fixed inset-0 z-50 flex items-end" onClick={()=>setShowPriPick(false)}>
+          <div className="absolute inset-0 bg-black/40"/>
+          <div className="relative bg-white rounded-t-3xl p-5 w-full" onClick={e=>e.stopPropagation()}>
+            <p className="text-sm font-black text-stone-800 mb-3">🚩 Priority</p>
+            <div className="flex flex-wrap gap-2">
+              <Chip on={!dispPri} click={()=>{setManPriority(null);setShowPriPick(false)}}>None</Chip>
+              {['P1','P2','P3','P4'].map(p=><Chip key={p} on={dispPri===p} click={()=>{setManPriority(p);setShowPriPick(false)}}>{p}</Chip>)}
+            </div>
+          </div>
+        </div>
+      )}
+      {showLblPick&&(
+        <div className="fixed inset-0 z-50 flex items-end" onClick={()=>setShowLblPick(false)}>
+          <div className="absolute inset-0 bg-black/40"/>
+          <div className="relative bg-white rounded-t-3xl p-5 w-full max-h-96 overflow-y-auto" onClick={e=>e.stopPropagation()}>
+            <p className="text-sm font-black text-stone-800 mb-3">🏷️ Labels</p>
+            <div className="flex flex-wrap gap-2">
+              {labels.map(l=>{const on=dispLbls.includes(l);return<Chip key={l} on={on} click={()=>setManLabels((manLabels!==undefined?manLabels:parsed.labels).includes(l)?(manLabels!==undefined?manLabels:parsed.labels).filter(x=>x!==l):[...(manLabels!==undefined?manLabels:parsed.labels),l])}>#{l}</Chip>})}
+              {!labels.length&&<p className="text-xs text-stone-400">No labels yet — type #label in the task name to create one.</p>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1695,6 +1934,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections}){
 function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj,sections}){
   const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null,notes:task.notes||'',sectionId:task.sectionId||null,comments:task.comments||[]});
   const [newLbl,setNewLbl]=useState('');const [newSub,setNewSub]=useState('');const [newComment,setNewComment]=useState('');
+  const [showDatePick,setShowDatePick]=useState(false);
   const s=(k,v)=>setT(p=>({...p,[k]:v}));
   const addComment=()=>{if(!newComment.trim())return;s('comments',[...(t.comments||[]),{id:uid(),text:newComment.trim(),createdAt:new Date().toISOString()}]);setNewComment('')};
   const setProject=name=>{const np=t.project===name?null:name;setT(p=>({...p,project:np,sectionId:np!==p.project?null:p.sectionId}))};
@@ -1721,14 +1961,14 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
           <textarea value={t.notes||''} onChange={e=>s('notes',e.target.value)} placeholder="Add notes…" className="w-full text-sm text-stone-500 bg-transparent resize-none focus:outline-none mt-1 leading-relaxed" rows={2}/>
 
           <div className="border-t border-stone-100 mt-3 pt-3 space-y-3">
-            {/* Due date */}
+            {/* Due date — minimal pill, opens the full-screen date/time picker */}
             <div>
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Due Date</p>
               <div className="flex flex-wrap gap-1.5 mb-2">{qd.map(({l,v})=><Chip key={l} on={t.dueDate===v&&v!==null} click={()=>s('dueDate',v)}>{l}</Chip>)}</div>
-              <div className="flex gap-2">
-                <input type="date" value={t.dueDate||''} onChange={e=>s('dueDate',e.target.value||null)} className="flex-1 px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
-                <input type="time" value={t.dueTime||''} onChange={e=>s('dueTime',e.target.value||null)} disabled={!t.dueDate} className="w-28 px-2 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700 disabled:opacity-40"/>
-              </div>
+              <button onClick={()=>setShowDatePick(true)} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm border border-stone-200 rounded-xl bg-stone-50 text-left">
+                <span>📅</span>
+                <span className={t.dueDate?'text-stone-700 font-semibold':'text-stone-400'}>{t.dueDate?fmtFull(t.dueDate)+(t.dueTime?' · '+fmtTime(t.dueTime):''):'No date'}{t.recurring?' · 🔄 '+RECUR_OPT[t.recurring]:''}</span>
+              </button>
             </div>
             {/* Deadline — separate from "when I'll work on it" due date */}
             <div>
@@ -1784,14 +2024,6 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
                 </div>
               </div>
             )}
-            {/* Recurrence */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Recurrence</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.recurring} click={()=>s('recurring',null)}>None</Chip>
-                {Object.entries(RECUR_OPT).map(([k,l])=><Chip key={k} on={t.recurring===k} click={()=>s('recurring',t.recurring===k?null:k)}>{l}</Chip>)}
-              </div>
-            </div>
             {/* Labels */}
             <div>
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Labels</p>
@@ -1859,11 +2091,10 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
           </div>
         </div>
       </div>
+      {showDatePick&&<DateTimePicker initDate={t.dueDate} initTime={t.dueTime} initRecur={t.recurring} taskDates={(allTasks||[]).map(x=>x.dueDate).filter(Boolean)} onSave={({dueDate,dueTime,recurring})=>{s('dueDate',dueDate);s('dueTime',dueTime);s('recurring',recurring)}} onClose={()=>setShowDatePick(false)}/>}
     </div>
   );
 }
-
-/* ── Settings View ───────────────────────────────────── */
 function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRetryDrive,onSync,syncing,labels,onSaveLbls,projects,onSavePrjs,taskCount,tasks,onExport,onImport}){
   const [inp,setInp]=useState(cid);
   const [newLbl,setNewLbl]=useState('');
