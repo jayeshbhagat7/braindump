@@ -86,16 +86,51 @@ const parseNL=(raw,projects,labels)=>{
 const GCAL='https://www.googleapis.com/calendar/v3';
 const DAPI='https://www.googleapis.com/drive/v3';
 
-let _tc=null,_tok=null;
+let _tc=null,_tok=null,_tokExp=0,_refreshTimer=null,_onOk=null;
 let _onAuthFail=null;
 const gcal={
   setAuthFailHandler(fn){_onAuthFail=fn},
-  init(cid,onOk){if(!window.google?.accounts?.oauth2)return false;_tc=window.google.accounts.oauth2.initTokenClient({client_id:cid,scope:'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata',callback:r=>{if(r.access_token){_tok=r.access_token;ls.set('tok',_tok);onOk()}}});const s=ls.get('tok');if(s){_tok=s;onOk()}return true},
+  init(cid,onOk){
+    if(!window.google?.accounts?.oauth2)return false;
+    _onOk=onOk;
+    _tc=window.google.accounts.oauth2.initTokenClient({
+      client_id:cid,
+      scope:'https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/drive.appdata',
+      callback:r=>{
+        if(r.access_token){
+          _tok=r.access_token;
+          _tokExp=Date.now()+((r.expires_in||3300)*1000);
+          ls.set('tok',_tok);ls.set('tok_exp',_tokExp);
+          gcal._scheduleRefresh();
+          _onOk&&_onOk();
+        }
+      },
+      error_callback:()=>{
+        // A silent refresh genuinely failed (revoked access, or fully signed out of Google in this browser) — only now do we need an interactive reconnect
+        _tok=null;ls.set('tok',null);
+        if(_onAuthFail)_onAuthFail();
+      }
+    });
+    const s=ls.get('tok');const exp=ls.get('tok_exp',0);
+    if(s){_tok=s;_tokExp=exp;onOk();gcal._scheduleRefresh()}
+    return true;
+  },
+  // Refresh the access token ~5min before it expires, quietly, in the background — avoids ever hitting a 401 mid-use
+  _scheduleRefresh(){
+    if(_refreshTimer)clearTimeout(_refreshTimer);
+    const msUntil=Math.max(30000,_tokExp-Date.now()-5*60*1000);
+    _refreshTimer=setTimeout(()=>{_tc&&_tc.requestAccessToken({prompt:''})},msUntil);
+  },
   connect(force){_tc&&_tc.requestAccessToken({prompt:force?'consent':''})},
-  invalidate(){_tok=null;ls.set('tok',null);if(_onAuthFail)_onAuthFail()},
+  invalidate(){
+    // A request came back 401 — try a silent, popup-free refresh first rather than immediately kicking the user out
+    if(_tc){_tc.requestAccessToken({prompt:''});return}
+    _tok=null;ls.set('tok',null);if(_onAuthFail)_onAuthFail();
+  },
   _h(){return{'Authorization':'Bearer '+_tok,'Content-Type':'application/json'}},
   async create(t){if(!_tok||!t.dueDate)return null;try{const r=await fetch(GCAL+'/calendars/primary/events',{method:'POST',headers:gcal._h(),body:JSON.stringify({summary:t.text,start:{date:t.dueDate},end:{date:t.dueDate},description:[t.priority&&('P: '+t.priority),(t.labels&&t.labels.length)&&('Labels: '+t.labels.join(', ')),t.project&&('Project: '+t.project)].filter(Boolean).join('\n')})});if(r.status===401){gcal.invalidate();return null}return(await r.json()).id||null}catch{return null}},
-  async del(eid){if(!_tok||!eid)return;try{await fetch(GCAL+'/calendars/primary/events/'+eid,{method:'DELETE',headers:gcal._h()})}catch{}}
+  // Returns true on success (including "already gone" 404/410) so callers can distinguish a real failure worth retrying
+  async del(eid){if(!eid)return true;if(!_tok)return false;try{const r=await fetch(GCAL+'/calendars/primary/events/'+eid,{method:'DELETE',headers:gcal._h()});if(r.status===401){gcal.invalidate();return false}return r.ok||r.status===404||r.status===410}catch{return false}}
 };
 // FIXED: stable file name + searches old version files for recovery
 const STABLE_FILE='gtd_braindump.json';
@@ -196,6 +231,9 @@ function App(){
   const [searchQ,setSearchQ]=useState('');
   const [gcalCid,setGcalCid]=useState(()=>ls.get('gcal_cid',''));
   const [gcalOk,setGcalOk]=useState(false);
+  const [pendingCalDel,setPendingCalDel]=useState(()=>ls.get('pendingCalDel',[]));
+  const queueCalDel=eid=>{if(!eid)return;setPendingCalDel(p=>{if(p.includes(eid))return p;const n=[...p,eid];ls.set('pendingCalDel',n);return n})};
+  const safeDel=eid=>{if(!eid)return;gcal.del(eid).then(ok=>{if(!ok)queueCalDel(eid)})};
   const [driveOk,setDriveOk]=useState(false);
   const [syncing,setSyncing]=useState(false);
   const [toast,setToast]=useState('');
@@ -274,7 +312,13 @@ function App(){
     }catch(e){setDriveOk(false);showToast('⚠️ Drive sync error — working offline')}
   },[labels,projects,sections]);
 
-  useEffect(()=>{if(!gcalOk)return;runDriveSync()},[gcalOk]);
+  const flushCalDel=async()=>{
+    if(!pendingCalDel.length)return;
+    const remaining=[];
+    for(const eid of pendingCalDel){const ok=await gcal.del(eid);if(!ok)remaining.push(eid)}
+    setPendingCalDel(remaining);ls.set('pendingCalDel',remaining);
+  };
+  useEffect(()=>{if(!gcalOk)return;runDriveSync();flushCalDel()},[gcalOk]);
 
   const showToast=(m,ms=3000)=>{setToast(m);setTimeout(()=>setToast(''),ms)};
   const persist=useCallback((t,l,p)=>{const fl=l||labels,fp=p||projects;setTasks(t);ls.set('tasks',t);const ts=Date.now();ls.set('tasks_ts',ts);if(gcalOk&&driveOk)drv.save({tasks:t,labels:fl,projects:fp,sections,_ts:ts}).catch(()=>{});},[gcalOk,driveOk,labels,projects,sections]);
@@ -301,7 +345,7 @@ function App(){
     const task=tasks.find(t=>t.id===id);if(!task)return;
     const upd={...task,status:'completed',completedAt:new Date().toISOString()};
     let nt=tasks.map(t=>t.id===id?upd:t);
-    if(gcalOk&&upd.calendarEventId)gcal.del(upd.calendarEventId);
+    if(gcalOk&&upd.calendarEventId)safeDel(upd.calendarEventId);
     if(task.recurring&&task.dueDate){const nxt={...task,id:uid(),dueDate:nextRecur(task.dueDate,task.recurring),status:'active',completedAt:null,calendarEventId:null,createdAt:new Date().toISOString(),subtasks:[]};nt=[...nt,nxt];if(gcalOk){const cid=await gcal.create(nxt);if(cid)nt=nt.map(t=>t.id===nxt.id?{...t,calendarEventId:cid}:t)}}
     pushUndo('✅ Completed "'+task.text.slice(0,30)+'"',tasks);
     persist(nt);
@@ -309,14 +353,14 @@ function App(){
   const uncomplete=id=>persist(tasks.map(t=>t.id===id?{...t,status:t.dueDate?'active':'inbox',completedAt:null}:t));
   const archive=id=>{pushUndo('📦 Archived task',tasks);persist(tasks.map(t=>t.id===id?{...t,status:'archived'}:t))};
   const restore=id=>persist(tasks.map(t=>t.id===id?{...t,status:'inbox'}:t));
-  const del=async id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)gcal.del(t.calendarEventId);pushUndo('🗑️ Deleted "'+(t?.text||'').slice(0,30)+'"',tasks);persist(tasks.filter(x=>x.id!==id))};
+  const del=async id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)safeDel(t.calendarEventId);pushUndo('🗑️ Deleted "'+(t?.text||'').slice(0,30)+'"',tasks);persist(tasks.filter(x=>x.id!==id))};
   const toggleSub=(tid,sid)=>persist(tasks.map(t=>t.id!==tid?t:{...t,subtasks:(t.subtasks||[]).map(s=>s.id===sid?{...s,done:!s.done}:s)}));
   const saveEdit=async upd=>{
     // status: if has dueDate → active (scheduled), else inbox
     let s=upd.project?'active':!upd.dueDate?'inbox':'active';
     if(upd.status==='completed'||upd.status==='archived')s=upd.status;
     const old=tasks.find(t=>t.id===upd.id);let ceid=upd.calendarEventId;
-    if(gcalOk){if(upd.dueDate&&s!=='archived'){if(!ceid)ceid=await gcal.create({...upd,status:s});else if(old?.dueDate!==upd.dueDate||old?.text!==upd.text){gcal.del(ceid);ceid=await gcal.create({...upd,status:s})}}else if(ceid){gcal.del(ceid);ceid=null}}
+    if(gcalOk){if(upd.dueDate&&s!=='archived'){if(!ceid)ceid=await gcal.create({...upd,status:s});else if(old?.dueDate!==upd.dueDate||old?.text!==upd.text){safeDel(ceid);ceid=await gcal.create({...upd,status:s})}}else if(ceid){safeDel(ceid);ceid=null}}
     // Sanity: a sectionId only makes sense if it belongs to the task's current project
     let sectionId=upd.sectionId||null;
     if(sectionId){const sec=sections.find(x=>x.id===sectionId);const prjObj=projects.find(p=>p.name===upd.project||p.id===upd.project);if(!sec||!prjObj||sec.projectId!==prjObj.id)sectionId=null}
@@ -335,7 +379,7 @@ function App(){
   // Move selected tasks to a different section within the SAME project (doesn't touch project field)
   const moveSelToSection=sectionId=>{pushUndo('📂 Moved '+selected.length+' task(s) to section',tasks);persist(tasks.map(t=>!selected.includes(t.id)?t:{...t,sectionId:sectionId||null}));exitSelect();showToast('📂 Moved '+selected.length+' tasks')};
   const archiveSel=()=>{pushUndo('📦 Archived '+selected.length+' task(s)',tasks);persist(tasks.map(t=>selected.includes(t.id)?{...t,status:'archived'}:t));exitSelect()};
-  const deleteSel=()=>{selected.forEach(id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)gcal.del(t.calendarEventId)});pushUndo('🗑️ Deleted '+selected.length+' task(s)',tasks);persist(tasks.filter(t=>!selected.includes(t.id)));exitSelect()};
+  const deleteSel=()=>{selected.forEach(id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)safeDel(t.calendarEventId)});pushUndo('🗑️ Deleted '+selected.length+' task(s)',tasks);persist(tasks.filter(t=>!selected.includes(t.id)));exitSelect()};
   // Reorder a task relative to its neighbor within the *visible, ordered* list (listIds), not the raw array
   const moveTask=(id,dir,listIds)=>{
     const ids=listIds&&listIds.length?listIds:tasks.map(t=>t.id);
@@ -382,17 +426,21 @@ function App(){
   const nav=(tab,extra={})=>{setView({tab,...extra});exitSelect()};
 
   return(
-    <div style={{position:'fixed',inset:0,display:'flex',flexDirection:'column',background:'#F7F7F5'}}>
+    <div style={{position:'fixed',inset:0,display:'flex',background:'#F7F7F5'}} className="flex-col md:flex-row">
+      {/* Desktop sidebar — Todoist-style persistent left rail, hidden on mobile where the bottom bar takes over */}
+      <Sidebar view={view} nav={nav} projects={projects} labels={labels} tasks={active} favorites={favorites} onToggleFav={toggleFav} todayN={todayN} inboxN={inboxN} onAddTask={()=>setShowQuickAdd(true)}/>
+      <div className="flex-1 flex flex-col min-w-0" style={{position:'relative'}}>
       {undoState?(
-        <div className="fixed top-4 left-4 right-4 z-50 bg-stone-900 text-white text-sm font-bold px-4 py-3 rounded-2xl shadow-xl flex items-center justify-between gap-3">
+        <div className="fixed top-4 left-4 right-4 md:left-auto md:right-6 md:w-96 z-50 bg-stone-900 text-white text-sm font-bold px-4 py-3 rounded-2xl shadow-xl flex items-center justify-between gap-3">
           <span className="truncate">{undoState.msg}</span>
           <button onClick={doUndo} className="text-emerald-400 font-black flex-shrink-0">UNDO</button>
         </div>
-      ):toast&&<div className="fixed top-4 left-4 right-4 z-50 bg-stone-900 text-white text-sm font-bold px-4 py-3 rounded-2xl text-center shadow-xl">{toast}</div>}
+      ):toast&&<div className="fixed top-4 left-4 right-4 md:left-auto md:right-6 md:w-96 z-50 bg-stone-900 text-white text-sm font-bold px-4 py-3 rounded-2xl text-center shadow-xl">{toast}</div>}
       {refreshing&&<div className="fixed top-4 left-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-xl" style={{transform:'translateX(-50%)'}}>🔄 Syncing…</div>}
 
       {/* Main content */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto" onTouchStart={onTouchStartMain} onTouchMove={onTouchMoveMain} onTouchEnd={onTouchEndMain}>
+        <div className="md:max-w-3xl md:mx-auto">
         {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
@@ -406,6 +454,7 @@ function App(){
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
         {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
+        </div>
       </div>
 
       {/* Project move modal (bulk) — pick project, then optionally a section in the same step */}
@@ -473,9 +522,9 @@ function App(){
         </div>
       )}
 
-      {/* FAB */}
+      {/* FAB — hidden on desktop, where the sidebar's Add task button covers this */}
       {!showQuickAdd&&!selectMode&&(
-        <button onClick={()=>setShowQuickAdd(true)} className="fixed z-30 bg-emerald-600 text-white shadow-2xl active:bg-emerald-700 flex items-center justify-center" style={{right:20,bottom:80,width:56,height:56,borderRadius:'50%',fontSize:28,lineHeight:1}}>+</button>
+        <button onClick={()=>setShowQuickAdd(true)} className="md:hidden fixed z-30 bg-emerald-600 text-white shadow-2xl active:bg-emerald-700 flex items-center justify-center" style={{right:20,bottom:80,width:56,height:56,borderRadius:'50%',fontSize:28,lineHeight:1}}>+</button>
       )}
 
       {/* Bulk select action bar */}
@@ -502,8 +551,8 @@ function App(){
         </div>
       )}
 
-      {/* Bottom nav — Settings moved to Browse header */}
-      <nav className="bg-white border-t border-stone-100 flex justify-around items-center px-1 flex-shrink-0" style={{paddingTop:8,paddingBottom:10}}>
+      {/* Bottom nav — mobile only. Desktop uses the sidebar instead. */}
+      <nav className="md:hidden bg-white border-t border-stone-100 flex justify-around items-center px-1 flex-shrink-0" style={{paddingTop:8,paddingBottom:10}}>
         {[{k:'today',e:'🏠',l:'Today',n:todayN},{k:'inbox',e:'📥',l:'Inbox',n:inboxN},{k:'browse',e:'📁',l:'Browse'},{k:'search',e:'🔍',l:'Search'},{k:'scheduled',e:'📅',l:'Upcoming'}].map(({k,e,l,n})=>(
           <button key={k} onClick={()=>nav(k)} className={'relative flex flex-col items-center gap-0.5 px-2 py-0.5 rounded-xl '+(view.tab===k?'text-emerald-600':'text-stone-400')}>
             <span style={{fontSize:20,lineHeight:1}}>{e}</span>
@@ -517,6 +566,7 @@ function App(){
       {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels} ctxProject={ctxProject} sections={sections} allTasks={tasks}/>}
       {/* Task Edit Modal */}
       {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections}/>}
+      </div>
     </div>
   );
 }
@@ -1030,35 +1080,51 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
   const [dragTaskId,setDragTaskId]=useState(null);
   const [dragPos,setDragPos]=useState({x:0,y:0});
   const [hoverCol,setHoverCol]=useState(null);
-  const dragInfo=useRef({active:false,taskId:null,startX:0,startY:0,moved:false,text:''});
-  const onCardDown=(e,task)=>{
+  const dragInfo=useRef({active:false,taskId:null,startX:0,startY:0,moved:false,text:'',fromCol:null});
+  const kanbanScrollRef=useRef(null);
+  const autoScrollTimer=useRef(null);
+  const onCardDown=(e,task,fromCol)=>{
     const pt=e.touches?e.touches[0]:e;
-    dragInfo.current={active:true,taskId:task.id,startX:pt.clientX,startY:pt.clientY,moved:false,text:task.text};
+    dragInfo.current={active:true,taskId:task.id,startX:pt.clientX,startY:pt.clientY,moved:false,text:task.text,fromCol};
   };
+  const stopAutoScroll=()=>{if(autoScrollTimer.current){clearInterval(autoScrollTimer.current);autoScrollTimer.current=null}};
   const onCardMove=e=>{
     if(!dragInfo.current.active)return;
     const pt=e.touches?e.touches[0]:e;
     const dx=pt.clientX-dragInfo.current.startX,dy=pt.clientY-dragInfo.current.startY;
-    if(!dragInfo.current.moved&&Math.hypot(dx,dy)>10){dragInfo.current.moved=true;setDragTaskId(dragInfo.current.taskId)}
+    // Slightly higher threshold than a single px — avoids a normal tap/touch jitter registering as a "move"
+    if(!dragInfo.current.moved&&Math.hypot(dx,dy)>16){dragInfo.current.moved=true;setDragTaskId(dragInfo.current.taskId)}
     if(dragInfo.current.moved){
       e.preventDefault&&e.preventDefault();
       setDragPos({x:pt.clientX,y:pt.clientY});
       const el=document.elementFromPoint(pt.clientX,pt.clientY);
       const colEl=el&&el.closest&&el.closest('[data-colkey]');
       setHoverCol(colEl?colEl.getAttribute('data-colkey'):null);
+      // Auto-scroll the board horizontally when dragging near either edge, so off-screen columns become reachable
+      const scroller=kanbanScrollRef.current;
+      if(scroller){
+        const rect=scroller.getBoundingClientRect();
+        const edge=50;
+        stopAutoScroll();
+        if(pt.clientX<rect.left+edge)autoScrollTimer.current=setInterval(()=>{scroller.scrollLeft-=14},16);
+        else if(pt.clientX>rect.right-edge)autoScrollTimer.current=setInterval(()=>{scroller.scrollLeft+=14},16);
+      }
     }
   };
   const onCardUp=e=>{
+    stopAutoScroll();
     if(dragInfo.current.moved&&dragInfo.current.taskId){
       const pt=e.changedTouches?e.changedTouches[0]:e;
       const el=document.elementFromPoint(pt.clientX,pt.clientY);
       const colEl=el&&el.closest&&el.closest('[data-colkey]');
-      if(colEl){const key=colEl.getAttribute('data-colkey');onQuickMoveSection&&onQuickMoveSection(dragInfo.current.taskId,key==='none'?null:key)}
+      const targetKey=colEl?colEl.getAttribute('data-colkey'):null;
+      // Only actually move it if it was dropped on a DIFFERENT column — dropping back where it started is a no-op
+      if(targetKey!==null&&targetKey!==dragInfo.current.fromCol){onQuickMoveSection&&onQuickMoveSection(dragInfo.current.taskId,targetKey==='none'?null:targetKey)}
     } else if(!dragInfo.current.moved&&dragInfo.current.taskId){
       const task=active.find(x=>x.id===dragInfo.current.taskId);
       if(task)onEdit(task);
     }
-    dragInfo.current={active:false,taskId:null,startX:0,startY:0,moved:false,text:''};
+    dragInfo.current={active:false,taskId:null,startX:0,startY:0,moved:false,text:'',fromCol:null};
     setDragTaskId(null);setHoverCol(null);
   };
   const ancestors=prjAncestors(projects,prj.id);
@@ -1171,11 +1237,11 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
       {viewMode==='kanban'&&active.length>0&&(
         <React.Fragment>
         <p className="px-4 pb-2 text-[10px] text-stone-300">Drag a card to another column to move it — or tap to open</p>
-        <div className="flex gap-3 px-4 overflow-x-auto pb-2" style={{scrollbarWidth:'none'}}>
+        <div ref={kanbanScrollRef} className="flex gap-3 px-4 overflow-x-auto pb-2" style={{scrollbarWidth:'none'}}>
           <div data-colkey="none" className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol==='none'?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
             <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">No Section · {noSection.length}</p>
             {noSection.map(t=>(
-              <div key={t.id} onMouseDown={e=>onCardDown(e,t)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
+              <div key={t.id} onMouseDown={e=>onCardDown(e,t,'none')} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t,'none')} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
                 <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
                 <div className="flex-1 min-w-0">
                   <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
@@ -1188,7 +1254,7 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
             <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
               <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">{sec.name} · {inSection(sec.id).length}</p>
               {inSection(sec.id).map(t=>(
-                <div key={t.id} onMouseDown={e=>onCardDown(e,t)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
+                <div key={t.id} onMouseDown={e=>onCardDown(e,t,sec.id)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t,sec.id)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
                   <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
@@ -1857,9 +1923,15 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections,allTasks}){
   return(
     <div className="fixed inset-0 z-50 flex flex-col justify-end">
       <div className="absolute inset-0 bg-black/40" onClick={onClose}/>
-      <div className="relative bg-white rounded-t-3xl px-4 pt-4 pb-8">
-        <div className="flex justify-center mb-3"><div className="w-10 h-1 bg-stone-200 rounded-full"/></div>
-        <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">Quick Add{ctxProject&&<span className="text-indigo-500 ml-2">→ {ctxProject.name}</span>}</p>
+      <div className="relative bg-white rounded-t-3xl px-4 pt-3 pb-6">
+        <div className="flex justify-center mb-2"><div className="w-10 h-1 bg-stone-200 rounded-full"/></div>
+        <div className="flex items-center justify-between mb-3">
+          <button onClick={onClose} className="text-stone-400 text-2xl font-bold px-1">‹</button>
+          <p className="text-xs font-black text-stone-400 uppercase tracking-widest">Quick Add{ctxProject&&<span className="text-indigo-500 ml-2">→ {ctxProject.name}</span>}</p>
+          <button onClick={handleAdd} disabled={!text.trim()} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white disabled:opacity-30 flex-shrink-0">
+            <svg width="16" height="12" viewBox="0 0 16 12" fill="none"><path d="M1 6L5.5 10.5L15 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+        </div>
         <input ref={ref} value={text} onChange={e=>handleChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdd()} placeholder="Task name… tomorrow @Project #label p1" className="w-full text-base text-stone-900 bg-transparent border-b-2 border-stone-200 focus:border-emerald-500 focus:outline-none pb-2 mb-3 transition-colors"/>
         {suggs.length>0&&suggMode==='tag'&&(
           <div className="flex gap-1.5 flex-wrap mb-3 p-2 bg-amber-50 rounded-xl border border-amber-200">
@@ -1896,10 +1968,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections,allTasks}){
             {dispLbls.map(l=><span key={l} className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-600"># {l}</span>)}
           </div>
         )}
-        <div className="text-[11px] text-stone-400 mb-3">Tip: <span className="font-semibold text-stone-500">tomorrow 3pm</span> · <span className="font-semibold text-stone-500">@Project</span> · <span className="font-semibold text-stone-500">/Section</span> · <span className="font-semibold text-stone-500">#label</span> · <span className="font-semibold text-stone-500">p1</span></div>
-        <button onClick={handleAdd} disabled={!text.trim()} className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700 disabled:opacity-40">
-          Add Task
-        </button>
+        <div className="text-[11px] text-stone-400 mb-1">Tip: <span className="font-semibold text-stone-500">tomorrow 3pm</span> · <span className="font-semibold text-stone-500">@Project</span> · <span className="font-semibold text-stone-500">/Section</span> · <span className="font-semibold text-stone-500">#label</span> · <span className="font-semibold text-stone-500">p1</span></div>
       </div>
       {showDatePick&&<DateTimePicker initDate={dispDate} initTime={dispTime} initRecur={manRecur!==undefined?manRecur:null} taskDates={(allTasks||[]).map(t=>t.dueDate).filter(Boolean)} onSave={({dueDate,dueTime,recurring})=>{setManDate(dueDate);setManTime(dueTime);setManRecur(recurring)}} onClose={()=>setShowDatePick(false)}/>}
       {showPriPick&&(
@@ -1952,9 +2021,15 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
       <div className="relative bg-white rounded-t-3xl overflow-y-auto" style={{maxHeight:'94vh'}}>
         <div className="flex justify-center pt-3 pb-1"><div className="w-10 h-1.5 bg-stone-200 rounded-full"/></div>
         {/* Header row */}
-        <div className="flex items-center gap-3 px-4 pb-2 pt-1">
-          <div className="w-5 h-5 rounded-full flex-shrink-0 border-2" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
-          <span className="text-xs font-semibold" style={{color:prj?prj.color:'#9ca3af'}}>{prj?('📁 '+prj.name):'📥 Inbox'}</span>
+        <div className="flex items-center justify-between px-4 pb-2 pt-1">
+          <button onClick={onClose} className="text-stone-400 text-2xl font-bold px-1">‹</button>
+          <span className="flex items-center gap-1.5 text-xs font-semibold" style={{color:prj?prj.color:'#9ca3af'}}>
+            <span className="w-3.5 h-3.5 rounded-full border-2" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
+            {prj?('📁 '+prj.name):'📥 Inbox'}
+          </span>
+          <button onClick={()=>onSave(t)} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white flex-shrink-0">
+            <svg width="16" height="12" viewBox="0 0 16 12" fill="none"><path d="M1 6L5.5 10.5L15 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
         </div>
         <div className="px-4 pb-14">
           <textarea value={t.text} onChange={e=>s('text',e.target.value)} className="w-full text-lg font-semibold text-stone-900 bg-transparent resize-none focus:outline-none leading-relaxed" style={{minHeight:48}} rows={2}/>
@@ -2083,11 +2158,10 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
             )}
           </div>
           {gcalOk&&t.dueDate&&<p className="text-xs text-center mt-4 text-emerald-600">{t.calendarEventId?'📆 Synced with Calendar':'📆 Will sync to Calendar on save'}</p>}
-          {/* Actions */}
+          {/* Secondary actions — Save lives at the top now (✓) */}
           <div className="flex gap-2 mt-5">
-            <button onClick={()=>onSave(t)} className="flex-1 py-4 bg-emerald-600 text-white rounded-2xl font-black text-sm shadow-md active:bg-emerald-700">Save</button>
-            <button onClick={onArch} className="px-4 py-4 bg-stone-100 text-stone-600 rounded-2xl text-lg">📦</button>
-            <button onClick={onDel}  className="px-4 py-4 bg-red-50 text-red-500 rounded-2xl text-lg">🗑️</button>
+            <button onClick={onArch} className="flex-1 py-3 bg-stone-100 text-stone-600 rounded-2xl text-xs font-bold">📦 Archive</button>
+            <button onClick={onDel}  className="flex-1 py-3 bg-red-50 text-red-500 rounded-2xl text-xs font-bold">🗑️ Delete</button>
           </div>
         </div>
       </div>
@@ -2239,6 +2313,62 @@ function LblPicker({labels,onConfirm,onClose}){
         <button onClick={onClose} className="px-4 py-3 bg-stone-100 text-stone-600 rounded-xl text-sm">Cancel</button>
       </div>
     </React.Fragment>
+  );
+}
+
+/* ── Desktop Sidebar (Todoist-style persistent left rail) ── */
+function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,inboxN,onAddTask}){
+  const [showPrjs,setShowPrjs]=useState(true);
+  const [showFavs,setShowFavs]=useState(true);
+  const tree=prjTree(projects);
+  const prjCount=p=>tasks.filter(t=>t.project===p.name||t.project===p.id).length;
+  const favProjects=(favorites||[]).filter(f=>f.type==='project').map(f=>projects.find(p=>(p.id||p.name)===f.id)).filter(Boolean);
+  const item=(k,ico,label,n,extra={})=>(
+    <button key={k} onClick={()=>nav(k,extra)} className={'w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold '+(view.tab===k&&(!extra.prjId||view.prjId===extra.prjId)?'bg-emerald-50 text-emerald-700':'text-stone-600 hover:bg-stone-100')}>
+      <span style={{fontSize:15}}>{ico}</span><span className="flex-1 text-left truncate">{label}</span>
+      {n>0&&<span className="text-[10px] text-stone-400 font-bold">{n}</span>}
+    </button>
+  );
+  return(
+    <div className="hidden md:flex flex-col w-64 flex-shrink-0 bg-white border-r border-stone-100 h-full overflow-y-auto px-3 py-4">
+      <div className="flex items-center gap-2 px-2 mb-4">
+        <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-sm flex-shrink-0">J</div>
+        <span className="text-sm font-black text-stone-800 truncate">Jayesh</span>
+      </div>
+      <button onClick={onAddTask} className="w-full flex items-center gap-2 px-3 py-2.5 mb-3 bg-emerald-600 text-white rounded-xl text-sm font-bold shadow-sm active:bg-emerald-700">
+        <span className="text-lg leading-none">＋</span> Add task
+      </button>
+      <div className="space-y-0.5 mb-3">
+        {item('search','🔍','Search')}
+        {item('inbox','📥','Inbox',inboxN)}
+        {item('today','🏠','Today',todayN)}
+        {item('scheduled','📅','Upcoming')}
+        {item('filters','🎛️','Filters & Labels')}
+        {item('browse','📁','Browse')}
+      </div>
+      {favProjects.length>0&&(
+        <div className="mb-3">
+          <button onClick={()=>setShowFavs(!showFavs)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] font-black text-stone-400 uppercase tracking-widest">
+            <span>★ Favorites</span><span>{showFavs?'▾':'▸'}</span>
+          </button>
+          {showFavs&&favProjects.map(p=>item('project','#',p.name,prjCount(p),{prjId:p.id||p.name}))}
+        </div>
+      )}
+      <div className="mb-3 flex-1">
+        <button onClick={()=>setShowPrjs(!showPrjs)} className="w-full flex items-center justify-between px-3 py-1.5 text-[10px] font-black text-stone-400 uppercase tracking-widest">
+          <span>My Projects</span><span>{showPrjs?'▾':'▸'}</span>
+        </button>
+        {showPrjs&&tree.map(p=>(
+          <button key={p.id} onClick={()=>nav('project',{prjId:p.id||p.name})} className={'w-full flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold '+(view.tab==='project'&&view.prjId===(p.id||p.name)?'bg-emerald-50 text-emerald-700':'text-stone-600 hover:bg-stone-100')} style={{paddingLeft:12+p.depth*14}}>
+            <span style={{color:p.color||'#6366f1'}}>#</span><span className="flex-1 text-left truncate">{p.name}</span>
+            <span className="text-[10px] text-stone-400 font-bold">{prjCount(p)}</span>
+          </button>
+        ))}
+      </div>
+      <div className="border-t border-stone-100 pt-2">
+        {item('settings','⚙️','Settings')}
+      </div>
+    </div>
   );
 }
 
