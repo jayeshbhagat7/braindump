@@ -188,6 +188,31 @@ const lblColor=(l,lbls)=>{const i=Math.max(0,lbls.indexOf(l))%LBL_COLORS.length;
 const prjDescendantIds=(projects,id)=>{const kids=projects.filter(p=>p.parentId===id);return kids.flatMap(k=>[k.id,...prjDescendantIds(projects,k.id)])};
 const prjAncestors=(projects,id)=>{const p=projects.find(x=>x.id===id);if(!p||!p.parentId)return[];const parent=projects.find(x=>x.id===p.parentId);return parent?[...prjAncestors(projects,parent.id),parent]:[]};
 const prjTree=(projects,parentId=null,depth=0)=>projects.filter(p=>(p.parentId||null)===parentId).flatMap(p=>[{...p,depth},...prjTree(projects,p.id,depth+1)]);
+/* ── Task nesting (subtasks-as-real-tasks via parentId) ── */
+const childrenOf=(id,pool)=>pool.filter(t=>t.parentId===id&&t.status!=='completed'&&t.status!=='archived');
+const isDescendantOf=(ancestorId,candidateId,pool)=>{
+  let cur=pool.find(t=>t.id===candidateId);const seen=new Set();
+  while(cur&&cur.parentId){if(seen.has(cur.id))return false;seen.add(cur.id);if(cur.parentId===ancestorId)return true;cur=pool.find(t=>t.id===cur.parentId)}
+  return false;
+};
+// Given a view's own filtered top-level list, walk in each task's children (pulled from the fuller `pool`)
+// so a task and its subtasks always render together, indented, regardless of the view's own filter.
+const buildNested=(topLevelFiltered,pool)=>{
+  const rows=[];const seen=new Set();
+  const walk=(t,depth)=>{if(seen.has(t.id))return;seen.add(t.id);rows.push({task:t,depth});childrenOf(t.id,pool).forEach(c=>walk(c,depth+1))};
+  topLevelFiltered.filter(t=>!t.parentId).forEach(t=>walk(t,0));
+  // A subtask whose parent doesn't happen to match this view's own filter (e.g. parent moved to a
+  // different project) would otherwise vanish entirely — surface it plainly rather than lose it from view.
+  topLevelFiltered.filter(t=>t.parentId&&!seen.has(t.id)).forEach(t=>walk(t,0));
+  return rows;
+};
+// Shared row renderer for the four list-style views that support nesting/drag-to-indent
+const renderNested=(list,pool,p)=>buildNested(list,pool).map(({task,depth})=>(
+  <TaskRow key={task.id} task={task} depth={depth} childCount={childrenOf(task.id,pool).length}
+    onComplete={p.onComplete} onEdit={p.onEdit} projects={p.projects} showProject={p.showProject} showCreated={p.showCreated}
+    selectMode={p.selectMode} isSelected={p.selected&&p.selected.includes(task.id)} onSelect={p.onSelect} onLongPress={p.onLongPress}
+    dragId={p.dragId} hoverId={p.hoverId} onRowDown={p.onRowDown} onRowMove={p.onRowMove} onRowUp={p.onRowUp}/>
+));
 // Sort utility for list views — 'manual' keeps the given order (or reverses it)
 const SORT_OPTS=[{k:'manual',l:'Manual'},{k:'date',l:'Date'},{k:'priority',l:'Priority'},{k:'alpha',l:'A–Z'}];
 const applySort=(list,sortKey,asc)=>{
@@ -217,7 +242,23 @@ function SortBtn({sortKey,asc,onChange}){
 /* ── App ────────────────────────────────────────────── */
 function App(){
   // State
-  const [tasks,setTasks]=useState(()=>ls.get('tasks',[]));
+  const [tasks,setTasks]=useState(()=>{
+    const raw=ls.get('tasks',[]);
+    if(ls.get('subtask_migrated_v1',false))return raw;
+    // One-time migration: old subtasks were {id,text,done} living inline on the parent.
+    // Convert each into a real, independent task with parentId set, so it can be dragged,
+    // indented/outdented, and edited on its own — same as any other task.
+    const extra=[];
+    const migrated=raw.map(t=>{
+      (t.subtasks||[]).forEach(st=>{
+        extra.push({id:st.id||uid(),text:st.text,createdAt:t.createdAt||new Date().toISOString(),dueDate:null,dueTime:null,labels:[],project:t.project||null,sectionId:t.sectionId||null,priority:null,eisenhower:null,type:'task',status:st.done?'completed':(t.status==='inbox'?'active':t.status),completedAt:st.done?new Date().toISOString():null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,parentId:t.id});
+      });
+      return{...t,subtasks:[]};
+    });
+    const all=[...migrated,...extra];
+    ls.set('tasks',all);ls.set('subtask_migrated_v1',true);
+    return all;
+  });
   const [labels,setLabels]=useState(()=>ls.get('labels',['Personal','Work','Health','Finance']));
   const [projects,setProjects]=useState(()=>{
     const raw=ls.get('projects_v2',null);
@@ -371,6 +412,19 @@ function App(){
   const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p,sections,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
   const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections:sec,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
   const quickMoveSection=(taskId,sectionId)=>{pushUndo('📂 Moved task',tasks);persist(tasks.map(t=>t.id===taskId?{...t,sectionId}:t))};
+  // Drag a task onto another task's row to indent it as a subtask; drop it back onto its own parent's
+  // row to outdent it one level (Workflowy/Todoist-style). Guards against nesting a task under its own descendant.
+  const reparentTask=(draggedId,targetId)=>{
+    if(draggedId===targetId)return;
+    const dragged=tasks.find(t=>t.id===draggedId);
+    if(!dragged)return;
+    if(isDescendantOf(draggedId,targetId,tasks)){showToast("↩️ Can't nest a task under its own subtask");return}
+    const target=tasks.find(t=>t.id===targetId);
+    const outdenting=dragged.parentId===targetId;
+    const newParentId=outdenting?(target?target.parentId||null:null):targetId;
+    pushUndo(outdenting?'⬅ Outdented "'+dragged.text.slice(0,24)+'"':'↳ Indented under "'+(target?.text||'').slice(0,24)+'"',tasks);
+    persist(tasks.map(t=>t.id===draggedId?{...t,parentId:newParentId}:t));
+  };
   // Undo: capture a snapshot of tasks *before* a destructive/bulk change, offer 5s window to restore it
   const pushUndo=(msg,prevTasks)=>{if(undoTimerRef.current)clearTimeout(undoTimerRef.current);setUndoState({msg,prevTasks});undoTimerRef.current=setTimeout(()=>setUndoState(null),5000)};
   const doUndo=()=>{if(!undoState)return;persist(undoState.prevTasks);setUndoState(null);if(undoTimerRef.current)clearTimeout(undoTimerRef.current)};
@@ -381,7 +435,7 @@ function App(){
 
   // Task operations
   const addTask=async(taskData)=>{
-    const t={id:uid(),createdAt:new Date().toISOString(),dueDate:null,dueTime:null,labels:[],project:null,sectionId:null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,...taskData};
+    const t={id:uid(),createdAt:new Date().toISOString(),dueDate:null,dueTime:null,labels:[],project:null,sectionId:null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,parentId:null,...taskData};
     let newTasks=[...tasks,t];
     if(gcalOk&&t.dueDate){const cid=await gcal.create(t);if(cid){t.calendarEventId=cid;newTasks=newTasks.map(x=>x.id===t.id?t:x)}}
     persist(newTasks);
@@ -486,14 +540,14 @@ function App(){
       {/* Main content */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" onTouchStart={onTouchStartMain} onTouchMove={onTouchMoveMain} onTouchEnd={onTouchEndMain}>
         <div className="md:max-w-3xl md:mx-auto">
-        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
-        {view.tab==='inbox'   &&<InboxView tasks={inbox} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='inbox'   &&<InboxView tasks={inbox} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
         {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects} customFilters={customFilters} onSaveFilters={persistFilters}/>}
         {view.tab==='customFilter' &&<CustomFilterView filter={view.filter} tasks={active} projects={projects} onBack={()=>nav('filters')} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} onDelFilter={id=>{persistFilters(customFilters.filter(f=>f.id!==id));nav('filters')}}/>}
         {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
-        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection}/>}
-        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection}/>}
+        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
@@ -610,32 +664,70 @@ function App(){
       {/* Quick Add */}
       {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels} ctxProject={ctxProject} sections={sections} allTasks={tasks}/>}
       {/* Task Edit Modal */}
-      {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections}/>}
+      {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections} onAddChildTask={text=>addTask({text,parentId:editTask.id,project:editTask.project,sectionId:editTask.sectionId,status:editTask.status==='inbox'?'active':editTask.status})} onCompleteChild={complete} onOutdentChild={id=>{const child=tasks.find(x=>x.id===id);const parent=child&&tasks.find(x=>x.id===child.parentId);pushUndo('⬅ Outdented sub-task',tasks);persist(tasks.map(x=>x.id===id?{...x,parentId:parent?parent.parentId||null:null}:x))}} onDelChild={del}/>}
       </div>
     </div>
   );
 }
 
+/* ── Drag-to-indent/outdent hook, shared by list views ── */
+function useRowDrag(onReparent){
+  const [dragId,setDragId]=useState(null);
+  const [hoverId,setHoverId]=useState(null);
+  const info=useRef({active:false,taskId:null,startX:0,startY:0,moved:false});
+  const onRowDown=(e,taskId)=>{const pt=e.touches?e.touches[0]:e;info.current={active:true,taskId,startX:pt.clientX,startY:pt.clientY,moved:false}};
+  const onRowMove=e=>{
+    if(!info.current.active)return;
+    const pt=e.touches?e.touches[0]:e;
+    const dx=pt.clientX-info.current.startX,dy=pt.clientY-info.current.startY;
+    if(!info.current.moved&&Math.hypot(dx,dy)>18){info.current.moved=true;setDragId(info.current.taskId)}
+    if(info.current.moved){
+      e.preventDefault&&e.preventDefault();
+      const el=document.elementFromPoint(pt.clientX,pt.clientY);
+      const rowEl=el&&el.closest&&el.closest('[data-taskrow]');
+      const hid=rowEl?rowEl.getAttribute('data-taskrow'):null;
+      setHoverId(hid&&hid!==info.current.taskId?hid:null);
+    }
+  };
+  const onRowUp=()=>{
+    if(info.current.moved&&info.current.taskId&&hoverId)onReparent(info.current.taskId,hoverId);
+    const wasDrag=info.current.moved;
+    info.current={active:false,taskId:null,startX:0,startY:0,moved:false};
+    setDragId(null);setHoverId(null);
+    return wasDrag;
+  };
+  return{dragId,hoverId,onRowDown,onRowMove,onRowUp};
+}
+
 /* ── Task Row ────────────────────────────────────────── */
-function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress}){
-  const [expanded,setExpanded]=useState(false);
+function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress,depth=0,childCount=0,dragId,hoverId,onRowDown,onRowMove,onRowUp}){
   const done=task.status==='completed';
   const ep=effPri(task);
   const auto=!task.priority&&daysOver(task.dueDate)>=1;
-  const subs=task.subtasks||[];
-  const doneSubs=subs.filter(s=>s.done).length;
   const prj=task.project?projects.find(p=>p.name===task.project||p.id===task.project):null;
   const circleColor=ep?PRI_COLOR[ep]:'#d1d5db';
   const lpTimer=useRef(null);
   const lpFired=useRef(false);
-  const startLP=()=>{lpFired.current=false;lpTimer.current=setTimeout(()=>{lpFired.current=true;if(navigator.vibrate)navigator.vibrate(15);onLongPress&&onLongPress(task.id)},450)};
+  const dragHandled=useRef(false);
+  const startLP=e=>{
+    lpFired.current=false;
+    if(selectMode&&isSelected){onRowDown&&onRowDown(e,task.id);return} // already selected — any move from here on is a drag, no long-press wait needed
+    lpTimer.current=setTimeout(()=>{lpFired.current=true;if(navigator.vibrate)navigator.vibrate(15);onLongPress&&onLongPress(task.id)},450);
+  };
   const cancelLP=()=>{if(lpTimer.current){clearTimeout(lpTimer.current);lpTimer.current=null}};
-  const handleRowClick=()=>{if(lpFired.current){lpFired.current=false;return}selectMode?onSelect&&onSelect(task.id):!done&&onEdit(task)};
+  // Outside of "this row is selected", touch-move behaves exactly as before (just cancels the long-press
+  // timer, no preventDefault) — normal list scrolling is never intercepted.
+  const moveTouch=e=>{if(selectMode&&isSelected){onRowMove&&onRowMove(e)}else{cancelLP()}};
+  const endTouch=()=>{cancelLP();if(selectMode&&isSelected&&onRowUp){const wasDrag=onRowUp();if(wasDrag)dragHandled.current=true}};
+  const handleRowClick=()=>{if(lpFired.current){lpFired.current=false;return}if(dragHandled.current){dragHandled.current=false;return}selectMode?onSelect&&onSelect(task.id):!done&&onEdit(task)};
   const fmtCreatedShort=iso=>{if(!iso)return'';const d=new Date(iso);const now=new Date();const diff=Math.floor((now-d)/864e5);if(diff===0)return'Today '+d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});if(diff===1)return'Yesterday';if(diff<7)return diff+'d ago';return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
+  const isBeingDragged=dragId===task.id;
+  const isDropTarget=hoverId===task.id;
 
   return(
-    <div className={'bg-white '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')}>
-      <div className="flex gap-3 px-4 py-3" onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={cancelLP} onTouchMove={cancelLP} onMouseDown={startLP} onMouseUp={cancelLP} onMouseLeave={cancelLP}>
+    <div data-taskrow={task.id} className={'bg-white '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')+(isBeingDragged?' opacity-30':'')+(isDropTarget?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={depth?{marginLeft:depth*18}:undefined}>
+      <div className="flex gap-3 px-4 py-3" onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={endTouch} onTouchMove={moveTouch} onMouseDown={startLP} onMouseMove={moveTouch} onMouseUp={endTouch} onMouseLeave={cancelLP}>
+        {depth>0&&<span className="text-stone-300 flex-shrink-0 select-none" style={{marginTop:2}}>↳</span>}
         {/* Priority circle / select checkbox */}
         {selectMode?(
           <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
@@ -662,25 +754,9 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
             {(task.labels||[]).slice(0,2).map(l=><span key={l} className="text-[10px] text-stone-400">#{l}</span>)}
             {task.recurring&&<span className="text-[10px] text-teal-500">🔄</span>}
             {task.goalType&&<span className="text-[10px] text-purple-500">⭐</span>}
+            {childCount>0&&<span className="text-[10px] text-stone-400">↳ {childCount} sub-task{childCount!==1?'s':''}</span>}
             {showCreated&&task.createdAt&&<span className="text-[10px] text-stone-300">🕐 {fmtCreatedShort(task.createdAt)}</span>}
           </div>
-          {subs.length>0&&!done&&(
-            <button onClick={ev=>{ev.stopPropagation();setExpanded(!expanded)}} className="flex items-center gap-1 mt-1.5 text-[10px] text-stone-400 font-semibold">
-              <span>{expanded?'▾':'▸'}</span><span>{doneSubs}/{subs.length} sub-tasks</span>
-            </button>
-          )}
-          {expanded&&(
-            <div className="mt-1.5 space-y-1 ml-1">
-              {subs.map(st=>(
-                <div key={st.id} onClick={ev=>{ev.stopPropagation();onToggleSub&&onToggleSub(task.id,st.id)}} className="flex items-center gap-2 py-0.5 cursor-pointer">
-                  <div className={'w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center '+(st.done?'border-emerald-500 bg-emerald-500':'border-stone-300')}>
-                    {st.done&&<svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                  </div>
-                  <span className={'text-xs '+(st.done?'line-through text-stone-400':'text-stone-600')}>{st.text}</span>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
       <div className="ml-16 h-px bg-stone-100"/>
@@ -689,10 +765,12 @@ function TaskRow({task,onComplete,onEdit,onToggleSub,projects,labels,showProject
 }
 
 /* ── Today View ─────────────────────────────────────── */
-function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,projects,selectMode,selected,onSelect,onLongPress}){
+function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress}){
   const [showUpcoming,setShowUpcoming]=useState(true);
   const dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const now=new Date();
+  const drag=useRowDrag(onReparent);
+  const rp={onComplete,onEdit,projects,showProject:true,selectMode,selected,onSelect,onLongPress,...drag};
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4">
@@ -702,13 +780,13 @@ function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,project
       {overdue.length>0&&(
         <div className="mb-2">
           <div className="px-4 py-2 flex items-center gap-2"><span className="text-xs font-black text-red-500 uppercase tracking-widest">🔴 Overdue ({overdue.length})</span></div>
-          {overdue.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+          {renderNested(overdue,allTasks,rp)}
         </div>
       )}
       {today.length>0&&(
         <div className="mb-2">
           <div className="px-4 py-2"><span className="text-xs font-black text-emerald-600 uppercase tracking-widest">📌 Today ({today.length})</span></div>
-          {today.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+          {renderNested(today,allTasks,rp)}
         </div>
       )}
       {upcoming.length>0&&(
@@ -716,7 +794,7 @@ function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,project
           <button onClick={()=>setShowUpcoming(!showUpcoming)} className="w-full px-4 py-2 flex items-center justify-between text-xs font-black text-stone-400 uppercase tracking-widest">
             <span>📅 Upcoming ({upcoming.length})</span><span>{showUpcoming?'▾':'▸'}</span>
           </button>
-          {showUpcoming&&upcoming.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+          {showUpcoming&&renderNested(upcoming,allTasks,rp)}
         </div>
       )}
       {selectMode&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
@@ -725,10 +803,11 @@ function TodayView({overdue,today,upcoming,onComplete,onEdit,onToggleSub,project
 }
 
 /* ── Inbox View ─────────────────────────────────────── */
-function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects,selectMode,selected,onSelect,onLongPress}){
+function InboxView({tasks,allTasks,onReparent,onComplete,onEdit,labels,projects,selectMode,selected,onSelect,onLongPress}){
   const [sortKey,setSortKey]=useState('manual');
   const [asc,setAsc]=useState(true);
   const sorted=applySort(tasks,sortKey,asc);
+  const drag=useRowDrag(onReparent);
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4 flex items-start justify-between gap-2">
@@ -738,7 +817,7 @@ function InboxView({tasks,onComplete,onEdit,onToggleSub,labels,projects,selectMo
         {tasks.length>1&&<SortBtn sortKey={sortKey} asc={asc} onChange={(k,a)=>{setSortKey(k);setAsc(a)}}/>}
       </div>
       {!tasks.length&&<div className="text-center py-12"><div style={{fontSize:48}}>📭</div><p className="text-base font-bold text-stone-600 mt-3">Inbox zero!</p><p className="text-sm text-stone-400 mt-1">Tap + to add tasks</p></div>}
-      {sorted.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} showCreated onLongPress={onLongPress}/>)}
+      {renderNested(sorted,allTasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,showCreated:true,...drag})}
       {selectMode&&tasks.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
     </div>
   );
@@ -1108,10 +1187,11 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
 }
 
 /* ── Project View ────────────────────────────────────── */
-function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections,onAddTask,onQuickMoveSection}){
+function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections,onAddTask,onQuickMoveSection}){
   if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
   const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
+  const rowDrag=useRowDrag(onReparent);
   const [showDone,setShowDone]=useState(false);
   const [viewMode,setViewModeRaw]=useState(()=>ls.get('viewMode_'+prj.id,'list')); // 'list' | 'kanban' — remembered per project, survives reload
   const setViewMode=m=>{setViewModeRaw(m);ls.set('viewMode_'+prj.id,m)};
@@ -1239,7 +1319,7 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
       {viewMode==='list'&&active.length>0&&(
         <React.Fragment>
           {noSection.length>0&&prjSections.length>0&&<div className="px-4 py-1.5"><span className="text-[10px] font-black text-stone-400 uppercase tracking-widest">No Section</span></div>}
-          {noSection.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+          {renderNested(noSection,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,...rowDrag})}
           {prjSections.map((sec,si)=>{
             const secTasks=inSection(sec.id);
             return(
@@ -1271,7 +1351,7 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
                   </div>
                 )}
                 {secTasks.length===0&&<p className="px-4 py-2 text-[11px] text-stone-300">No tasks yet</p>}
-                {secTasks.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+                {renderNested(secTasks,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,...rowDrag})}
               </div>
             );
           })}
@@ -1348,10 +1428,11 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
 }
 
 /* ── Label View ──────────────────────────────────────── */
-function LabelView({lbl,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projects,selectMode,selected,onSelect,onLongPress}){
+function LabelView({lbl,tasks,allTasks,onReparent,onComplete,onEdit,onBack,labels,projects,selectMode,selected,onSelect,onLongPress}){
   const [sortKey,setSortKey]=useState('date');
   const [asc,setAsc]=useState(true);
   const active=applySort(tasks.filter(t=>t.status!=='completed'&&t.status!=='archived'),sortKey,asc);
+  const drag=useRowDrag(onReparent);
   return(
     <div className="pb-24">
       <div className="flex items-center gap-3 px-4 pt-4 pb-4">
@@ -1361,7 +1442,7 @@ function LabelView({lbl,tasks,onComplete,onEdit,onToggleSub,onBack,labels,projec
         {active.length>1&&<SortBtn sortKey={sortKey} asc={asc} onChange={(k,a)=>{setSortKey(k);setAsc(a)}}/>}
       </div>
       {!active.length&&<div className="text-center py-12"><div style={{fontSize:40}}>🏷️</div><p className="text-sm font-bold text-stone-500 mt-2">No tasks with #{lbl}</p></div>}
-      {active.map(t=><TaskRow key={t.id} task={t} onComplete={onComplete} onEdit={onEdit} onToggleSub={onToggleSub} projects={projects} showProject showCreated selectMode={selectMode} isSelected={selected&&selected.includes(t.id)} onSelect={onSelect} onLongPress={onLongPress}/>)}
+      {renderNested(active,allTasks||tasks,{onComplete,onEdit,projects,showProject:true,showCreated:true,selectMode,selected,onSelect,onLongPress,...drag})}
       {selectMode&&active.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
     </div>
   );
@@ -2061,7 +2142,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections,allTasks}){
 }
 
 /* ── Task Modal (full edit) ──────────────────────────── */
-function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj,sections}){
+function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj,sections,onAddChildTask,onCompleteChild,onOutdentChild,onDelChild}){
   const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null,notes:task.notes||'',sectionId:task.sectionId||null,comments:task.comments||[]});
   const [newLbl,setNewLbl]=useState('');const [newSub,setNewSub]=useState('');const [newComment,setNewComment]=useState('');
   const [showDatePick,setShowDatePick]=useState(false);
@@ -2070,9 +2151,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
   const setProject=name=>{const np=t.project===name?null:name;setT(p=>({...p,project:np,sectionId:np!==p.project?null:p.sectionId}))};
   const qd=[{l:'Today',v:todayISO()},{l:'Tomorrow',v:addDays(1)},{l:'This Week',v:addDays(6)},{l:'Next Month',v:addDays(30)},{l:'Clear',v:null}];
   const addL=()=>{const l=newLbl.trim();if(!l||labels.includes(l))return;onAddLbl(l);s('labels',[...(t.labels||[]),l]);setNewLbl('')};
-  const addSub=()=>{if(!newSub.trim())return;s('subtasks',[...(t.subtasks||[]),{id:uid(),text:newSub.trim(),done:false}]);setNewSub('')};
-  const togSub=i=>s('subtasks',(t.subtasks||[]).map((x,j)=>j===i?{...x,done:!x.done}:x));
-  const delSub=i=>s('subtasks',(t.subtasks||[]).filter((_,j)=>j!==i));
+  const children=(allTasks||[]).filter(x=>x.parentId===task.id&&x.status!=='archived');
   const related=t.labels&&t.labels.length?allTasks.filter(r=>r.id!==t.id&&!['archived','completed'].includes(r.status)&&(r.labels||[]).some(l=>(t.labels||[]).includes(l))).slice(0,4):[];
   const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
   const prjSections=prj?(sections||[]).filter(sec=>sec.projectId===prj.id):[];
@@ -2179,22 +2258,25 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
                 {GOAL_TIERS.map(g=><Chip key={g.k} on={t.goalType===g.k} click={()=>s('goalType',t.goalType===g.k?null:g.k)}>{g.l}</Chip>)}
               </div>
             </div>
-            {/* Sub-tasks */}
+            {/* Sub-tasks — these are now real, independent tasks (parentId), same as any other task.
+                You can also drag any task onto another in the list view to indent/outdent it. */}
             <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Sub-tasks ({(t.subtasks||[]).length})</p>
-              {(t.subtasks||[]).map((st,i)=>(
-                <div key={st.id} className="flex items-center gap-2 py-1.5 border-b border-stone-100">
-                  <button onClick={()=>togSub(i)} className={'w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center '+(st.done?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
-                    {st.done&&<svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Sub-tasks ({children.length})</p>
+              {children.map(c=>(
+                <div key={c.id} className="flex items-center gap-2 py-1.5 border-b border-stone-100">
+                  <button onClick={()=>onCompleteChild&&onCompleteChild(c.id)} className={'w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center '+(c.status==='completed'?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+                    {c.status==='completed'&&<svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                   </button>
-                  <span className={'flex-1 text-xs '+(st.done?'line-through text-stone-400':'text-stone-700')}>{st.text}</span>
-                  <button onClick={()=>delSub(i)} className="text-stone-300 text-sm active:text-red-400">×</button>
+                  <span className={'flex-1 text-xs '+(c.status==='completed'?'line-through text-stone-400':'text-stone-700')}>{c.text}</span>
+                  <button onClick={()=>onOutdentChild&&onOutdentChild(c.id)} title="Move out to top level" className="text-stone-300 text-xs font-bold active:text-stone-500 px-1">⬅</button>
+                  <button onClick={()=>onDelChild&&onDelChild(c.id)} className="text-stone-300 text-sm active:text-red-400">×</button>
                 </div>
               ))}
               <div className="flex gap-2 mt-2">
-                <input value={newSub} onChange={e=>setNewSub(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSub()} placeholder="Add sub-task…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
-                <button onClick={addSub} className="px-3 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs font-bold">Add</button>
+                <input value={newSub} onChange={e=>setNewSub(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newSub.trim()){onAddChildTask&&onAddChildTask(newSub.trim());setNewSub('')}}} placeholder="Add sub-task…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
+                <button onClick={()=>{if(newSub.trim()){onAddChildTask&&onAddChildTask(newSub.trim());setNewSub('')}}} className="px-3 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs font-bold">Add</button>
               </div>
+              {!!task.parentId&&<p className="text-[10px] text-stone-300 mt-2">This task is itself a sub-task. Drag it onto its parent's row in the list to move it back out.</p>}
             </div>
             {/* Comments / activity log */}
             <div>
