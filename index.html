@@ -277,13 +277,34 @@ function App(){
     if(window.google?.accounts?.oauth2)tryInit();
     else{const id=setInterval(()=>{if(window.google?.accounts?.oauth2){clearInterval(id);tryInit()}},400);return()=>clearInterval(id)}
   },[gcalCid]);
+  // Merge two devices' task lists at the task level (not "pick one whole list") so that completing a
+  // task on desktop and adding a task on mobile — even close together, even offline — both survive.
+  const mergeTaskLists=(local,remote,localTomb,remoteTomb)=>{
+    const allTombIds=new Set([...Object.keys(localTomb||{}),...Object.keys(remoteTomb||{})]);
+    const mergedTomb={};
+    allTombIds.forEach(id=>{mergedTomb[id]=Math.max(localTomb?.[id]||0,remoteTomb?.[id]||0)});
+    const map=new Map();
+    local.forEach(t=>map.set(t.id,t));
+    remote.forEach(rt=>{
+      const lt=map.get(rt.id);
+      if(!lt){map.set(rt.id,rt);return}
+      if((rt._upd||0)>(lt._upd||0))map.set(rt.id,rt); // per-task: newer edit wins, not "whichever whole list is newer"
+    });
+    // A tombstone newer than a task's last edit means it was deleted after that edit — drop it either way
+    const merged=Array.from(map.values()).filter(t=>!(mergedTomb[t.id]&&mergedTomb[t.id]>=(t._upd||0)));
+    return{merged,mergedTomb};
+  };
+  const unionByKey=(a,b,keyFn)=>{
+    const map=new Map();(a||[]).forEach(x=>map.set(keyFn(x),x));(b||[]).forEach(x=>{if(!map.has(keyFn(x)))map.set(keyFn(x),x)});
+    return Array.from(map.values());
+  };
   const runDriveSync=useCallback(async()=>{
     try{
       const driveData=await drv.load();
       const localTasks=ls.get('tasks',[]);
-      const localTs=ls.get('tasks_ts',0);
+      const localTomb=ls.get('tombstones',{});
       if(!driveData||!driveData.tasks){
-        const ok=await drv.save({tasks:localTasks,labels,projects,sections,_ts:Date.now()});
+        const ok=await drv.save({tasks:localTasks,labels,projects,sections,tombstones:localTomb,_ts:Date.now()});
         setDriveOk(ok);
         if(ok)showToast('☁️ '+localTasks.length+' tasks saved to Drive');
         else showToast('⚠️ Drive API may not be enabled — see Settings');
@@ -291,25 +312,20 @@ function App(){
       }
       setDriveOk(true);
       const driveTasks=driveData.tasks||[];
-      const driveTs=driveData._ts||0;
-      if(localTasks.length===0&&driveTasks.length>0){
-        setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
-        if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
-        if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
-        if(driveData.sections){setSections(driveData.sections);ls.set('sections',driveData.sections)}
-        showToast('📥 Restored '+driveTasks.length+' tasks from Drive!');
-        if(driveData._foundIn&&driveData._foundIn!==STABLE_FILE){drv.save({tasks:driveTasks,labels,projects,sections:driveData.sections||sections})}
-      } else if(driveTs>localTs&&driveTasks.length>=localTasks.length){
-        setTasks(driveTasks);ls.set('tasks',driveTasks);ls.set('tasks_ts',driveTs);
-        if(driveData.labels){setLabels(driveData.labels);ls.set('labels',driveData.labels)}
-        if(driveData.projects){setProjects(driveData.projects);ls.set('projects_v2',driveData.projects)}
-        if(driveData.sections){setSections(driveData.sections);ls.set('sections',driveData.sections)}
-        showToast('📥 '+driveTasks.length+' tasks synced from Drive');
-      } else {
-        const ok=await drv.save({tasks:localTasks,labels,projects,sections,_ts:Math.max(localTs,Date.now())});
-        if(ok&&driveData._foundIn&&driveData._foundIn!==STABLE_FILE)showToast('☁️ '+localTasks.length+' tasks migrated to Drive');
-      }
-    }catch(e){setDriveOk(false);showToast('⚠️ Drive sync error — working offline')}
+      const remoteTomb=driveData.tombstones||{};
+      const {merged,mergedTomb}=mergeTaskLists(localTasks,driveTasks,localTomb,remoteTomb);
+      const mergedLabels=unionByKey(labels,driveData.labels,x=>x);
+      const mergedProjects=unionByKey(projects,driveData.projects,x=>x.id||x.name);
+      const mergedSections=unionByKey(sections,driveData.sections,x=>x.id);
+      const changed=merged.length!==localTasks.length||JSON.stringify(merged)!==JSON.stringify(localTasks);
+      setTasks(merged);ls.set('tasks',merged);ls.set('tasks_ts',Date.now());ls.set('tombstones',mergedTomb);
+      if(mergedLabels.length!==labels.length){setLabels(mergedLabels);ls.set('labels',mergedLabels)}
+      if(mergedProjects.length!==projects.length){setProjects(mergedProjects);ls.set('projects_v2',mergedProjects)}
+      if(mergedSections.length!==sections.length){setSections(mergedSections);ls.set('sections',mergedSections)}
+      // Write the merged result straight back so both devices converge on the same state
+      await drv.save({tasks:merged,labels:mergedLabels,projects:mergedProjects,sections:mergedSections,tombstones:mergedTomb,_ts:Date.now()});
+      if(changed&&driveTasks.length)showToast('☁️ Synced with your other device');
+    }catch(e){setDriveOk(false)}
   },[labels,projects,sections]);
 
   const flushCalDel=async()=>{
@@ -319,12 +335,41 @@ function App(){
     setPendingCalDel(remaining);ls.set('pendingCalDel',remaining);
   };
   useEffect(()=>{if(!gcalOk)return;runDriveSync();flushCalDel()},[gcalOk]);
+  // Keep devices in sync automatically: re-check Drive whenever this tab/app becomes visible again
+  // (e.g. switching from desktop back to your phone), and every ~40s while it stays open and visible.
+  useEffect(()=>{
+    if(!gcalOk)return;
+    const onVis=()=>{if(document.visibilityState==='visible')runDriveSync()};
+    document.addEventListener('visibilitychange',onVis);
+    window.addEventListener('focus',onVis);
+    const iv=setInterval(()=>{if(document.visibilityState==='visible')runDriveSync()},40000);
+    return()=>{document.removeEventListener('visibilitychange',onVis);window.removeEventListener('focus',onVis);clearInterval(iv)};
+  },[gcalOk,runDriveSync]);
 
   const showToast=(m,ms=3000)=>{setToast(m);setTimeout(()=>setToast(''),ms)};
-  const persist=useCallback((t,l,p)=>{const fl=l||labels,fp=p||projects;setTasks(t);ls.set('tasks',t);const ts=Date.now();ls.set('tasks_ts',ts);if(gcalOk&&driveOk)drv.save({tasks:t,labels:fl,projects:fp,sections,_ts:ts}).catch(()=>{});},[gcalOk,driveOk,labels,projects,sections]);
-  const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk&&driveOk)drv.save({tasks,labels:l,projects,sections}).catch(()=>{})};
-  const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p,sections}).catch(()=>{})};
-  const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections:sec}).catch(()=>{})};
+  const persist=useCallback((t,l,p)=>{
+    const fl=l||labels,fp=p||projects;
+    const now=Date.now();
+    const prevById=new Map(tasks.map(x=>[x.id,x]));
+    // Stamp only the tasks that actually changed — this is what lets sync merge two devices' edits
+    // task-by-task instead of blindly picking one whole list over the other.
+    const stamped=t.map(nt=>{
+      const prev=prevById.get(nt.id);
+      if(!prev||JSON.stringify(prev)!==JSON.stringify(nt))return{...nt,_upd:now};
+      return nt;
+    });
+    // Anything that existed before but is missing now was deleted — record a tombstone so the
+    // deletion can propagate to the other device instead of the task quietly reappearing there.
+    const newIds=new Set(stamped.map(x=>x.id));
+    const deletedNow=tasks.filter(x=>!newIds.has(x.id)).map(x=>x.id);
+    let tomb=ls.get('tombstones',{});
+    if(deletedNow.length){tomb={...tomb};deletedNow.forEach(id=>{tomb[id]=now});ls.set('tombstones',tomb)}
+    setTasks(stamped);ls.set('tasks',stamped);ls.set('tasks_ts',now);
+    if(gcalOk&&driveOk)drv.save({tasks:stamped,labels:fl,projects:fp,sections,tombstones:tomb,_ts:now}).catch(()=>{});
+  },[gcalOk,driveOk,labels,projects,sections,tasks]);
+  const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk&&driveOk)drv.save({tasks,labels:l,projects,sections,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
+  const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p,sections,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
+  const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections:sec,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
   const quickMoveSection=(taskId,sectionId)=>{pushUndo('📂 Moved task',tasks);persist(tasks.map(t=>t.id===taskId?{...t,sectionId}:t))};
   // Undo: capture a snapshot of tasks *before* a destructive/bulk change, offer 5s window to restore it
   const pushUndo=(msg,prevTasks)=>{if(undoTimerRef.current)clearTimeout(undoTimerRef.current);setUndoState({msg,prevTasks});undoTimerRef.current=setTimeout(()=>setUndoState(null),5000)};
@@ -1249,6 +1294,14 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
                 </div>
               </div>
             ))}
+            {addTaskToSec==='__none__'?(
+              <div className="flex gap-1.5 mt-1">
+                <input autoFocus value={newSecTaskText} onChange={e=>setNewSecTaskText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:null,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}if(e.key==='Escape')setAddTaskToSec(null)}} placeholder="Task name…" className="flex-1 min-w-0 px-2 py-1.5 text-xs border border-stone-200 rounded-lg bg-white focus:outline-none"/>
+                <button onClick={()=>{if(newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:null,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}}} className="px-2 bg-emerald-600 text-white rounded-lg text-xs font-bold flex-shrink-0">Add</button>
+              </div>
+            ):(
+              <button onClick={()=>{setAddTaskToSec('__none__');setNewSecTaskText('')}} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
+            )}
           </div>
           {prjSections.map(sec=>(
             <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
@@ -1262,6 +1315,14 @@ function ProjectView({prj,tasks,onComplete,onEdit,onToggleSub,onBack,onNav,label
                   </div>
                 </div>
               ))}
+              {addTaskToSec===sec.id?(
+                <div className="flex gap-1.5 mt-1">
+                  <input autoFocus value={newSecTaskText} onChange={e=>setNewSecTaskText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:sec.id,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}if(e.key==='Escape')setAddTaskToSec(null)}} placeholder="Task name…" className="flex-1 min-w-0 px-2 py-1.5 text-xs border border-stone-200 rounded-lg bg-white focus:outline-none"/>
+                  <button onClick={()=>{if(newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:sec.id,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}}} className="px-2 bg-emerald-600 text-white rounded-lg text-xs font-bold flex-shrink-0">Add</button>
+                </div>
+              ):(
+                <button onClick={()=>{setAddTaskToSec(sec.id);setNewSecTaskText('')}} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
+              )}
             </div>
           ))}
         </div>
