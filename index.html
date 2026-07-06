@@ -271,6 +271,7 @@ function App(){
   const [editTask,setEditTask]=useState(null);
   const [showQuickAdd,setShowQuickAdd]=useState(false);
   const [quickAddSectionId,setQuickAddSectionId]=useState(null);
+  const [quickAddPrefill,setQuickAddPrefill]=useState('');
   const openQuickAddForSection=sectionId=>{setQuickAddSectionId(sectionId);setShowQuickAdd(true)};
   const [searchQ,setSearchQ]=useState('');
   const [gcalCid,setGcalCid]=useState(()=>ls.get('gcal_cid',''));
@@ -285,6 +286,31 @@ function App(){
   const [favorites,setFavorites]=useState(()=>ls.get('favorites',[])); // array of {type:'project'|'label',id,name}
   const saveFavs=f=>{setFavorites(f);ls.set('favorites',f)};
   const toggleFav=(type,id,name)=>{const exists=favorites.find(f=>f.type===type&&f.id===id);saveFavs(exists?favorites.filter(f=>!(f.type===type&&f.id===id)):[...favorites,{type,id,name}])};
+  // Mission — a rarely-edited personal constitution, kept separate from tasks
+  const [mission,setMission]=useState(()=>ls.get('mission',''));
+  const [missionHistory,setMissionHistory]=useState(()=>ls.get('missionHistory',[]));
+  const saveMission=text=>{
+    const hist=mission.trim()?[{text:mission,savedAt:new Date().toISOString()},...missionHistory].slice(0,20):missionHistory;
+    const ts=Date.now();
+    setMission(text);setMissionHistory(hist);ls.set('mission',text);ls.set('missionHistory',hist);ls.set('missionTs',ts);
+    if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections,tombstones:ls.get('tombstones',{}),mission:text,missionHistory:hist,missionTs:ts,circleItems,circleTs:ls.get('circleTs',0),lastWeeklyReview,reviewHistory}).catch(()=>{});
+  };
+  // Circle of Influence/Concern — reflective sort, deliberately separate from real tasks
+  const [circleItems,setCircleItems]=useState(()=>ls.get('circleItems',[]));
+  const persistCircle=items=>{
+    const ts=Date.now();
+    setCircleItems(items);ls.set('circleItems',items);ls.set('circleTs',ts);
+    if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections,tombstones:ls.get('tombstones',{}),mission,missionHistory,missionTs:ls.get('missionTs',0),circleItems:items,circleTs:ts,lastWeeklyReview,reviewHistory}).catch(()=>{});
+  };
+  // Weekly Review — a guided ritual, not just a calendar
+  const [lastWeeklyReview,setLastWeeklyReview]=useState(()=>ls.get('lastWeeklyReview',null));
+  const [reviewHistory,setReviewHistory]=useState(()=>ls.get('reviewHistory',[]));
+  const finishWeeklyReview=notes=>{
+    const now=new Date().toISOString();
+    const hist=[{date:now,notes:notes||''},...reviewHistory].slice(0,30);
+    setLastWeeklyReview(now);setReviewHistory(hist);ls.set('lastWeeklyReview',now);ls.set('reviewHistory',hist);
+    if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections,tombstones:ls.get('tombstones',{}),mission,missionHistory,missionTs:ls.get('missionTs',0),circleItems,circleTs:ls.get('circleTs',0),lastWeeklyReview:now,reviewHistory:hist}).catch(()=>{});
+  };
   const [selectMode,setSelectMode]=useState(false);
   const [selected,setSelected]=useState([]);
   const [showLblAssign,setShowLblAssign]=useState(false);
@@ -347,8 +373,10 @@ function App(){
       const driveData=await drv.load();
       const localTasks=ls.get('tasks',[]);
       const localTomb=ls.get('tombstones',{});
+      const localMissionTs=ls.get('missionTs',0);
+      const localCircleTs=ls.get('circleTs',0);
       if(!driveData||!driveData.tasks){
-        const ok=await drv.save({tasks:localTasks,labels,projects,sections,tombstones:localTomb,_ts:Date.now()});
+        const ok=await drv.save({tasks:localTasks,labels,projects,sections,tombstones:localTomb,mission,missionHistory,missionTs:localMissionTs,circleItems,circleTs:localCircleTs,lastWeeklyReview,reviewHistory,_ts:Date.now()});
         setDriveOk(ok);
         if(ok)showToast('☁️ '+localTasks.length+' tasks saved to Drive');
         else showToast('⚠️ Drive API may not be enabled — see Settings');
@@ -361,16 +389,37 @@ function App(){
       const mergedLabels=unionByKey(labels,driveData.labels,x=>x);
       const mergedProjects=unionByKey(projects,driveData.projects,x=>x.id||x.name);
       const mergedSections=unionByKey(sections,driveData.sections,x=>x.id);
+      // Mission/Circle: whole-value-wins-by-timestamp (not union) — these are single reflective
+      // documents/lists, not per-item records, so "newest edit wins" is the correct merge here.
+      const remoteMissionTs=driveData.missionTs||0;
+      const useMissionRemote=remoteMissionTs>localMissionTs;
+      const mergedMission=useMissionRemote?(driveData.mission||''):mission;
+      const mergedMissionHistory=useMissionRemote?(driveData.missionHistory||[]):missionHistory;
+      const mergedMissionTs=Math.max(remoteMissionTs,localMissionTs);
+      const remoteCircleTs=driveData.circleTs||0;
+      const useCircleRemote=remoteCircleTs>localCircleTs;
+      const mergedCircle=useCircleRemote?(driveData.circleItems||[]):circleItems;
+      const mergedCircleTs=Math.max(remoteCircleTs,localCircleTs);
+      // Weekly review: keep whichever device's review is chronologically most recent
+      const remoteReview=driveData.lastWeeklyReview||null;
+      const mergedLastReview=(remoteReview&&(!lastWeeklyReview||remoteReview>lastWeeklyReview))?remoteReview:lastWeeklyReview;
+      const mergedReviewHistory=unionByKey(reviewHistory,driveData.reviewHistory,x=>x.date);
       const changed=merged.length!==localTasks.length||JSON.stringify(merged)!==JSON.stringify(localTasks);
       setTasks(merged);ls.set('tasks',merged);ls.set('tasks_ts',Date.now());ls.set('tombstones',mergedTomb);
       if(mergedLabels.length!==labels.length){setLabels(mergedLabels);ls.set('labels',mergedLabels)}
       if(mergedProjects.length!==projects.length){setProjects(mergedProjects);ls.set('projects_v2',mergedProjects)}
       if(mergedSections.length!==sections.length){setSections(mergedSections);ls.set('sections',mergedSections)}
+      if(useMissionRemote){setMission(mergedMission);setMissionHistory(mergedMissionHistory);ls.set('mission',mergedMission);ls.set('missionHistory',mergedMissionHistory)}
+      ls.set('missionTs',mergedMissionTs);
+      if(useCircleRemote){setCircleItems(mergedCircle);ls.set('circleItems',mergedCircle)}
+      ls.set('circleTs',mergedCircleTs);
+      if(mergedLastReview!==lastWeeklyReview){setLastWeeklyReview(mergedLastReview);ls.set('lastWeeklyReview',mergedLastReview)}
+      if(mergedReviewHistory.length!==reviewHistory.length){setReviewHistory(mergedReviewHistory);ls.set('reviewHistory',mergedReviewHistory)}
       // Write the merged result straight back so both devices converge on the same state
-      await drv.save({tasks:merged,labels:mergedLabels,projects:mergedProjects,sections:mergedSections,tombstones:mergedTomb,_ts:Date.now()});
+      await drv.save({tasks:merged,labels:mergedLabels,projects:mergedProjects,sections:mergedSections,tombstones:mergedTomb,mission:mergedMission,missionHistory:mergedMissionHistory,missionTs:mergedMissionTs,circleItems:mergedCircle,circleTs:mergedCircleTs,lastWeeklyReview:mergedLastReview,reviewHistory:mergedReviewHistory,_ts:Date.now()});
       if(changed&&driveTasks.length)showToast('☁️ Synced with your other device');
     }catch(e){setDriveOk(false)}
-  },[labels,projects,sections]);
+  },[labels,projects,sections,mission,missionHistory,circleItems,lastWeeklyReview,reviewHistory]);
 
   const flushCalDel=async()=>{
     if(!pendingCalDel.length)return;
@@ -415,6 +464,7 @@ function App(){
   const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p,sections,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
   const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections:sec,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
   const quickMoveSection=(taskId,sectionId)=>{pushUndo('📂 Moved task',tasks);persist(tasks.map(t=>t.id===taskId?{...t,sectionId}:t))};
+  const toggleWeeklyFocus=taskId=>persist(tasks.map(t=>t.id===taskId?{...t,weeklyFocus:!t.weeklyFocus}:t));
   // Drag a task onto another task's row to indent it as a subtask; drop it back onto its own parent's
   // row to outdent it one level (Workflowy/Todoist-style). Guards against nesting a task under its own descendant.
   const reparentTask=(draggedId,targetId)=>{
@@ -442,7 +492,7 @@ function App(){
 
   // Task operations
   const addTask=async(taskData)=>{
-    const t={id:uid(),createdAt:new Date().toISOString(),dueDate:null,dueTime:null,labels:[],project:null,sectionId:null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,parentId:null,...taskData};
+    const t={id:uid(),createdAt:new Date().toISOString(),dueDate:null,dueTime:null,labels:[],project:null,sectionId:null,priority:null,eisenhower:null,type:'task',status:'inbox',completedAt:null,calendarEventId:null,recurring:null,subtasks:[],goalType:null,parentId:null,weeklyFocus:false,...taskData};
     let newTasks=[...tasks,t];
     if(gcalOk&&t.dueDate){const cid=await gcal.create(t);if(cid){t.calendarEventId=cid;newTasks=newTasks.map(x=>x.id===t.id?t:x)}}
     persist(newTasks);
@@ -473,8 +523,8 @@ function App(){
     persist(tasks.map(t=>t.id===upd.id?{...upd,status:s,calendarEventId:ceid,sectionId}:t));setEditTask(null);
   };
   const syncAll=async()=>{setSyncing(true);const dated=tasks.filter(t=>t.dueDate&&t.status!=='archived'&&!t.calendarEventId);let upd=[...tasks];let cnt=0;for(const t of dated){const id=await gcal.create(t);if(id){upd=upd.map(u=>u.id===t.id?{...u,calendarEventId:id}:u);cnt++}}persist(upd);setSyncing(false);showToast('✅ Synced '+cnt+' tasks')};
-  const exportJSON=()=>{const d={tasks,labels,projects,exportedAt:new Date().toISOString()};const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='braindump-backup-'+todayISO()+'.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);showToast('💾 Backup downloaded!')};
-  const importJSON=file=>{if(!file)return;const r=new FileReader();r.onload=e=>{try{const d=JSON.parse(e.target.result);if(d.tasks&&Array.isArray(d.tasks)){persist(d.tasks);if(d.labels)persistLbls(d.labels);if(d.projects)persistPrjs(d.projects);showToast('✅ Imported '+d.tasks.length+' tasks!')}else showToast('❌ Invalid backup file')}catch{showToast('❌ Could not read file')}};r.readAsText(file)};
+  const exportJSON=()=>{const d={tasks,labels,projects,sections,mission,missionHistory,circleItems,lastWeeklyReview,reviewHistory,exportedAt:new Date().toISOString()};const blob=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='braindump-backup-'+todayISO()+'.json';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);showToast('💾 Backup downloaded!')};
+  const importJSON=file=>{if(!file)return;const r=new FileReader();r.onload=e=>{try{const d=JSON.parse(e.target.result);if(d.tasks&&Array.isArray(d.tasks)){persist(d.tasks);if(d.labels)persistLbls(d.labels);if(d.projects)persistPrjs(d.projects);if(d.sections)persistSections(d.sections);if(d.mission)saveMission(d.mission);if(d.circleItems)persistCircle(d.circleItems);showToast('✅ Imported '+d.tasks.length+' tasks!')}else showToast('❌ Invalid backup file')}catch{showToast('❌ Could not read file')}};r.readAsText(file)};
 
   // Multi-select bulk operations
   const toggleSel=id=>setSelected(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
@@ -565,7 +615,7 @@ function App(){
       {/* Main content */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" onTouchStart={onTouchStartMain} onTouchMove={onTouchMoveMain} onTouchEnd={onTouchEndMain}>
         <div className="md:max-w-3xl md:mx-auto">
-        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} lastWeeklyReview={lastWeeklyReview} onOpenReview={()=>nav('review')}/>}
         {view.tab==='inbox'   &&<InboxView tasks={inbox} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
         {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects} customFilters={customFilters} onSaveFilters={persistFilters}/>}
@@ -577,6 +627,9 @@ function App(){
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
         {view.tab==='eisenhower' &&<EisenhowerView tasks={active} onEdit={setEditTask} onComplete={complete} projects={projects}/>}
+        {view.tab==='mission' &&<MissionView mission={mission} history={missionHistory} onSave={saveMission}/>}
+        {view.tab==='circle' &&<CircleView items={circleItems} onSave={persistCircle} onPromote={(text,id)=>{persistCircle(circleItems.filter(i=>i.id!==id));setQuickAddPrefill(text);setShowQuickAdd(true)}}/>}
+        {view.tab==='review' &&<WeeklyReviewView inboxCount={inbox.length} overdueCount={overdueTasks.length} overdueTasks={overdueTasks} goalTasks={goals} circleItems={circleItems} weekPool={[...todayTasks,...upcomingTasks]} onToggleFocus={toggleWeeklyFocus} onNav={nav} onFinish={finishWeeklyReview} lastWeeklyReview={lastWeeklyReview} reviewHistory={reviewHistory}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
         {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
         </div>
@@ -690,7 +743,7 @@ function App(){
       </nav>
 
       {/* Quick Add */}
-      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>{setShowQuickAdd(false);setQuickAddSectionId(null)}} projects={projects} labels={labels} ctxProject={ctxProject} ctxSection={quickAddSectionId?sections.find(s=>s.id===quickAddSectionId):null} sections={sections} allTasks={tasks}/>}
+      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>{setShowQuickAdd(false);setQuickAddSectionId(null);setQuickAddPrefill('')}} projects={projects} labels={labels} ctxProject={ctxProject} ctxSection={quickAddSectionId?sections.find(s=>s.id===quickAddSectionId):null} sections={sections} allTasks={tasks} initialText={quickAddPrefill}/>}
       {/* Task Edit Modal */}
       {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections} onAddChildTask={text=>addTask({text,parentId:editTask.id,project:editTask.project,sectionId:editTask.sectionId,status:editTask.status==='inbox'?'active':editTask.status})} onCompleteChild={complete} onOutdentChild={id=>{const child=tasks.find(x=>x.id===id);const parent=child&&tasks.find(x=>x.id===child.parentId);pushUndo('⬅ Outdented sub-task',tasks);persist(tasks.map(x=>x.id===id?{...x,parentId:parent?parent.parentId||null:null}:x))}} onDelChild={del}/>}
       </div>
@@ -821,17 +874,30 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
 }
 
 /* ── Today View ─────────────────────────────────────── */
-function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress}){
+function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,lastWeeklyReview,onOpenReview}){
   const [showUpcoming,setShowUpcoming]=useState(true);
   const dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const now=new Date();
   const drag=useRowDrag(onReparent);
   const rp={onComplete,onEdit,projects,showProject:true,selectMode,selected,onSelect,onLongPress,...drag};
+  const reviewDue=!lastWeeklyReview||(Date.now()-new Date(lastWeeklyReview).getTime())>7*864e5;
+  const focusTasks=(allTasks||[]).filter(t=>t.weeklyFocus&&t.status!=='completed'&&t.status!=='archived');
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4">
         <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">{dayNames[now.getDay()]}</p><h2 className="text-3xl font-black text-stone-900">Today</h2><p className="text-sm text-stone-400 mt-0.5">{now.toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p>
       </div>
+      {reviewDue&&(
+        <button onClick={onOpenReview} className="mx-4 mb-3 w-[calc(100%-2rem)] flex items-center gap-2 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2.5 text-left">
+          <span>📋</span><span className="text-xs font-bold text-indigo-700 flex-1">Weekly review due — tap to start</span><span className="text-indigo-300 text-sm">›</span>
+        </button>
+      )}
+      {focusTasks.length>0&&(
+        <div className="mb-3">
+          <div className="px-4 py-2"><span className="text-xs font-black text-purple-600 uppercase tracking-widest">⭐ This Week's Focus ({focusTasks.length})</span></div>
+          {renderNested(focusTasks,allTasks,rp)}
+        </div>
+      )}
       {overdue.length===0&&today.length===0&&<div className="text-center py-12 px-8"><div style={{fontSize:48}} className="mb-3">🎉</div><p className="text-base font-bold text-stone-600">All caught up!</p><p className="text-sm text-stone-400 mt-1">No tasks due today</p></div>}
       {overdue.length>0&&(
         <div className="mb-2">
@@ -906,7 +972,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
               <div className="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-lg">J</div>
               <div><p className="text-white font-black text-base">Jayesh Bhagat</p><p className="text-stone-400 text-xs">Site-in-Charge · WWC</p></div>
             </div>
-            {[{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
+            {[{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'📋',l:'Weekly Review',tab:'review'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'🧭',l:'My Mission',tab:'mission'},{ico:'🌤️',l:'Circle of Influence',tab:'circle'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
               <button key={l} onClick={()=>{onNav(tab);setShowProfile(false)}} className="flex items-center gap-3 py-3 text-stone-300 text-sm font-semibold border-b border-stone-800">
                 <span style={{fontSize:18}}>{ico}</span>{l}
               </button>
@@ -1747,6 +1813,175 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
 /* ── Goals View ──────────────────────────────────────── */
 /* ── Goals View ──────────────────────────────────────── */
 /* ── 🧭 Eisenhower Matrix View ──────────────────────── */
+/* ── 🧭 My Mission ─────────────────────────────────── */
+function MissionView({mission,history,onSave}){
+  const [text,setText]=useState(mission);
+  const [showHistory,setShowHistory]=useState(false);
+  const dirty=text!==mission;
+  return(
+    <div className="pb-24 px-4 pt-5">
+      <h2 className="text-3xl font-black text-stone-900 mb-1">🧭 My Mission</h2>
+      <p className="text-sm text-stone-400 mb-4">Your personal constitution — what governs your actions and goals. Not a one-time write; return and revise it whenever it needs revisiting.</p>
+      {!mission&&!text&&(
+        <div className="bg-stone-50 rounded-2xl p-4 mb-3 text-xs text-stone-500 space-y-1.5">
+          <p className="font-bold text-stone-600">A few prompts, if it helps to start:</p>
+          <p>• What do you want to be known for, as an engineer? As a family member?</p>
+          <p>• What's non-negotiable for you, regardless of pressure or deadlines?</p>
+          <p>• What would "a good week" look like, if you got to define it?</p>
+        </div>
+      )}
+      <textarea value={text} onChange={e=>setText(e.target.value)} placeholder="Write your mission…" rows={10} className="w-full px-4 py-3 text-sm border border-stone-200 rounded-2xl bg-white focus:outline-none focus:border-emerald-400 leading-relaxed"/>
+      <button onClick={()=>onSave(text)} disabled={!dirty} className="w-full mt-3 py-3 bg-emerald-600 text-white rounded-2xl font-black text-sm disabled:opacity-30">Save</button>
+      {history.length>0&&(
+        <div className="mt-6">
+          <button onClick={()=>setShowHistory(!showHistory)} className="text-xs font-black text-stone-400 uppercase tracking-widest">
+            {showHistory?'▾':'▸'} Previous versions ({history.length})
+          </button>
+          {showHistory&&(
+            <div className="mt-2 space-y-2">
+              {history.map((h,i)=>(
+                <div key={i} className="bg-stone-50 rounded-xl p-3">
+                  <p className="text-[10px] text-stone-400 mb-1">{new Date(h.savedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</p>
+                  <p className="text-xs text-stone-600 whitespace-pre-wrap">{h.text}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── 🌤️ Circle of Influence / Concern ────────────────── */
+function CircleView({items,onSave,onPromote}){
+  const [text,setText]=useState('');
+  const concerns=items.filter(i=>i.bucket==='concern');
+  const influence=items.filter(i=>i.bucket==='influence');
+  const add=()=>{if(!text.trim())return;onSave([...items,{id:uid(),text:text.trim(),bucket:'concern',createdAt:new Date().toISOString()}]);setText('')};
+  const moveTo=(id,bucket)=>onSave(items.map(i=>i.id===id?{...i,bucket}:i));
+  const remove=id=>onSave(items.filter(i=>i.id!==id));
+  const Col=({title,sub,list,color,action})=>(
+    <div className="mb-5">
+      <p className="text-xs font-black uppercase tracking-widest mb-0.5" style={{color}}>{title}</p>
+      <p className="text-[11px] text-stone-400 mb-2">{sub}</p>
+      {!list.length&&<p className="text-xs text-stone-300 py-3">Nothing here yet</p>}
+      {list.map(i=>(
+        <div key={i.id} className="flex items-center gap-2 bg-white border border-stone-100 rounded-xl px-3 py-2.5 mb-1.5">
+          <span className="flex-1 text-sm text-stone-700">{i.text}</span>
+          {action(i)}
+          <button onClick={()=>remove(i.id)} className="text-stone-300 text-sm px-1">×</button>
+        </div>
+      ))}
+    </div>
+  );
+  return(
+    <div className="pb-24 px-4 pt-5">
+      <h2 className="text-3xl font-black text-stone-900 mb-1">🌤️ Circle of Influence</h2>
+      <p className="text-sm text-stone-400 mb-4">Sort what's on your mind: what you're only worrying about, versus what you can actually do something about. Effective people work to grow the second circle.</p>
+      <div className="flex gap-2 mb-5">
+        <input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>e.key==='Enter'&&add()} placeholder="What's on your mind…" className="flex-1 px-3 py-2.5 text-sm border border-stone-200 rounded-xl bg-white focus:outline-none"/>
+        <button onClick={add} className="px-4 py-2.5 bg-stone-800 text-white rounded-xl text-xs font-bold">Add</button>
+      </div>
+      <Col title="😟 Circle of Concern" sub="Things weighing on you — not yet clear what to do about them" list={concerns} color="#9ca3af"
+        action={i=><button onClick={()=>moveTo(i.id,'influence')} className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">→ I can act</button>}/>
+      <Col title="🎯 Circle of Influence" sub="Things you can actually do something about" list={influence} color="#059669"
+        action={i=><button onClick={()=>onPromote(i.text,i.id)} className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">→ Make it an action</button>}/>
+    </div>
+  );
+}
+
+/* ── 📋 Weekly Review ─────────────────────────────────── */
+function WeeklyReviewView({inboxCount,overdueCount,overdueTasks,goalTasks,circleItems,weekPool,onToggleFocus,onNav,onFinish,lastWeeklyReview,reviewHistory}){
+  const [step,setStep]=useState(0);
+  const [notes,setNotes]=useState('');
+  const [showHist,setShowHist]=useState(false);
+  const STEPS=['Inbox','Overdue','Goals','Circle','Big Rocks','Done'];
+  const next=()=>setStep(s=>Math.min(s+1,STEPS.length-1));
+  const back=()=>setStep(s=>Math.max(s-1,0));
+  return(
+    <div className="pb-24 px-4 pt-5">
+      <h2 className="text-3xl font-black text-stone-900 mb-1">📋 Weekly Review</h2>
+      <p className="text-sm text-stone-400 mb-1">{lastWeeklyReview?'Last review: '+new Date(lastWeeklyReview).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'No review done yet'}</p>
+      <div className="flex gap-1 mb-5 mt-3">
+        {STEPS.map((s,i)=><div key={s} className={'flex-1 h-1 rounded-full '+(i<=step?'bg-emerald-500':'bg-stone-100')}/>)}
+      </div>
+
+      {step===0&&(
+        <div>
+          <p className="text-lg font-black text-stone-800 mb-2">1. Clear your Inbox</p>
+          <p className="text-sm text-stone-400 mb-4">{inboxCount} item{inboxCount!==1?'s':''} sitting unfiled.</p>
+          <button onClick={()=>onNav('inbox')} className="w-full py-3 bg-stone-100 text-stone-700 rounded-xl text-sm font-bold mb-2">📥 Open Inbox</button>
+        </div>
+      )}
+      {step===1&&(
+        <div>
+          <p className="text-lg font-black text-stone-800 mb-2">2. Review overdue</p>
+          <p className="text-sm text-stone-400 mb-4">{overdueCount} task{overdueCount!==1?'s':''} overdue.</p>
+          {overdueTasks.slice(0,8).map(t=><div key={t.id} className="bg-stone-50 rounded-xl px-3 py-2 mb-1.5 text-xs text-stone-600">{t.text}</div>)}
+          <button onClick={()=>onNav('today')} className="w-full py-3 bg-stone-100 text-stone-700 rounded-xl text-sm font-bold mt-2">🏠 Open Today</button>
+        </div>
+      )}
+      {step===2&&(
+        <div>
+          <p className="text-lg font-black text-stone-800 mb-2">3. Are your Goals still right?</p>
+          <p className="text-sm text-stone-400 mb-4">Anything to mark done, drop, or re-scope?</p>
+          {!goalTasks.length&&<p className="text-xs text-stone-300 py-3">No active goals tagged yet.</p>}
+          {goalTasks.map(t=><div key={t.id} className="bg-stone-50 rounded-xl px-3 py-2 mb-1.5 text-xs text-stone-600">⭐ {t.text}</div>)}
+          <button onClick={()=>onNav('goals')} className="w-full py-3 bg-stone-100 text-stone-700 rounded-xl text-sm font-bold mt-2">🌟 Open Goals</button>
+        </div>
+      )}
+      {step===3&&(
+        <div>
+          <p className="text-lg font-black text-stone-800 mb-2">4. Circle of Influence</p>
+          <p className="text-sm text-stone-400 mb-4">Anything you've been only worrying about that you could actually act on now?</p>
+          {!circleItems.length&&<p className="text-xs text-stone-300 py-3">Nothing logged there yet.</p>}
+          {circleItems.slice(0,8).map(i=><div key={i.id} className="bg-stone-50 rounded-xl px-3 py-2 mb-1.5 text-xs text-stone-600">{i.bucket==='concern'?'😟':'🎯'} {i.text}</div>)}
+          <button onClick={()=>onNav('circle')} className="w-full py-3 bg-stone-100 text-stone-700 rounded-xl text-sm font-bold mt-2">🌤️ Open Circle of Influence</button>
+        </div>
+      )}
+      {step===4&&(
+        <div>
+          <p className="text-lg font-black text-stone-800 mb-2">5. Pick this week's big rocks</p>
+          <p className="text-sm text-stone-400 mb-4">1–3 Q2 (important, not urgent) actions you're committing to this week.</p>
+          {!weekPool.length&&<p className="text-xs text-stone-300 py-3">Nothing due this week yet — that's fine, add some from Today.</p>}
+          {weekPool.slice(0,25).map(t=>(
+            <button key={t.id} onClick={()=>onToggleFocus(t.id)} className={'w-full flex items-center gap-2 rounded-xl px-3 py-2 mb-1.5 text-left text-xs '+(t.weeklyFocus?'bg-emerald-50 text-emerald-700 font-bold':'bg-stone-50 text-stone-600')}>
+              <span>{t.weeklyFocus?'⭐':'☆'}</span>{t.text}
+            </button>
+          ))}
+        </div>
+      )}
+      {step===5&&(
+        <div>
+          <p className="text-lg font-black text-stone-800 mb-2">Anything worth remembering?</p>
+          <p className="text-sm text-stone-400 mb-3">Optional — a short note on why you prioritized what you did this week. Useful when priorities shift later and you want to remember why.</p>
+          <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={4} placeholder="Notes for this week (optional)…" className="w-full px-3 py-2.5 text-sm border border-stone-200 rounded-xl bg-white focus:outline-none mb-3"/>
+          <button onClick={()=>{onFinish(notes);setNotes('');setStep(0)}} className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-black text-sm">✓ Finish Review</button>
+        </div>
+      )}
+
+      <div className="flex gap-2 mt-5">
+        {step>0&&<button onClick={back} className="px-4 py-2.5 bg-white border border-stone-200 rounded-xl text-xs font-bold text-stone-500">‹ Back</button>}
+        {step<STEPS.length-1&&<button onClick={next} className="flex-1 py-2.5 bg-stone-800 text-white rounded-xl text-xs font-bold">Next ›</button>}
+      </div>
+
+      {reviewHistory.length>0&&(
+        <div className="mt-6">
+          <button onClick={()=>setShowHist(!showHist)} className="text-xs font-black text-stone-400 uppercase tracking-widest">{showHist?'▾':'▸'} Past reviews ({reviewHistory.length})</button>
+          {showHist&&reviewHistory.map((h,i)=>(
+            <div key={i} className="bg-stone-50 rounded-xl p-3 mt-2">
+              <p className="text-[10px] text-stone-400 mb-1">{new Date(h.date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</p>
+              {h.notes&&<p className="text-xs text-stone-600 whitespace-pre-wrap">{h.notes}</p>}
+              {!h.notes&&<p className="text-xs text-stone-300">No notes</p>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EisenhowerView({tasks,onEdit,onComplete,projects}){
   const QUADS=[
     {k:'do',l:'Do First',sub:'Urgent + Important',color:'#ef4444',bg:'bg-red-50'},
@@ -2099,8 +2334,8 @@ const parseSection=(v,secList)=>{
   if(!match)return{text:v,sectionName:null};
   return{text:v.replace(sm[0],'').replace(/\s+/g,' ').trim(),sectionName:match.name};
 };
-function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,allTasks}){
-  const [text,setText]=useState('');
+function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,allTasks,initialText}){
+  const [text,setText]=useState(initialText||'');
   const [parsed,setParsed]=useState({text:'',dueDate:null,dueTime:null,priority:null,labels:[],project:ctxProject?ctxProject.name:null,sectionName:null});
   const [suggs,setSuggs]=useState([]);
   const [suggMode,setSuggMode]=useState(null); // 'tag'|'project'|'section'
@@ -2114,7 +2349,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,
   const [showDatePick,setShowDatePick]=useState(false);
   const [showPriPick,setShowPriPick]=useState(false);
   const [showLblPick,setShowLblPick]=useState(false);
-  useEffect(()=>{ref.current&&ref.current.focus()},[]);
+  useEffect(()=>{ref.current&&ref.current.focus();if(initialText)handleChange(initialText)},[]);
   const secListFor=projName=>{const po=projects.find(p=>p.name===projName);return po?(sections||[]).filter(s=>s.projectId===po.id):[]};
   const handleChange=v=>{
     setText(v);
@@ -2597,7 +2832,10 @@ function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,in
         {item('today','🏠','Today',todayN)}
         {item('scheduled','📅','Upcoming')}
         {item('filters','🎛️','Filters & Labels')}
+        {item('review','📋','Weekly Review')}
         {item('eisenhower','🧭','Eisenhower Matrix')}
+        {item('mission','🧭','My Mission')}
+        {item('circle','🌤️','Circle of Influence')}
         {item('browse','📁','Browse')}
       </div>
       {favProjects.length>0&&(
