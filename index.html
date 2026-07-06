@@ -181,6 +181,7 @@ const PRI_BG={P1:'bg-red-50',P2:'bg-orange-50',P3:'bg-blue-50',P4:'bg-stone-50'}
 const PRI_LABEL={P1:'🔴 P1 – Priority 1',P2:'🟠 P2 – Priority 2',P3:'🔵 P3 – Priority 3',P4:'⚪ P4 – Priority 4'};
 const EIS=[{k:'do',s:'Do Now',l:'Urgent + Important'},{k:'schedule',s:'Schedule',l:'Important, Not Urgent'},{k:'delegate',s:'Delegate',l:'Urgent, Not Important'},{k:'drop',s:'Drop',l:'Not Urgent/Important'}];
 const RECUR_OPT={daily:'Daily',weekly:'Weekly',monthly:'Monthly',yearly:'Yearly'};
+const EISEN_OPT={do:'Do First',schedule:'Schedule',delegate:'Delegate',eliminate:'Eliminate'};
 const GOAL_TIERS=[{k:'short',l:'🎯 Short-term',s:'< 3 months'},{k:'medium',l:'📈 Medium-term',s:'3–12 months'},{k:'long',l:'🌟 Long-term',s:'1–3 years'},{k:'vlong',l:'🚀 Very Long-term',s:'3+ years'}];
 const LBL_COLORS=['bg-sky-100 text-sky-700 border-sky-200','bg-amber-100 text-amber-700 border-amber-200','bg-pink-100 text-pink-700 border-pink-200','bg-purple-100 text-purple-700 border-purple-200','bg-teal-100 text-teal-700 border-teal-200','bg-rose-100 text-rose-700 border-rose-200'];
 const lblColor=(l,lbls)=>{const i=Math.max(0,lbls.indexOf(l))%LBL_COLORS.length;return LBL_COLORS[i]||LBL_COLORS[0]};
@@ -197,8 +198,8 @@ const isDescendantOf=(ancestorId,candidateId,pool)=>{
 };
 // Given a view's own filtered top-level list, walk in each task's children (pulled from the fuller `pool`)
 // so a task and its subtasks always render together, indented, regardless of the view's own filter.
-const buildNested=(topLevelFiltered,pool)=>{
-  const rows=[];const seen=new Set();
+const buildNested=(topLevelFiltered,pool,sharedSeen)=>{
+  const rows=[];const seen=sharedSeen||new Set();
   const walk=(t,depth)=>{if(seen.has(t.id))return;seen.add(t.id);rows.push({task:t,depth});childrenOf(t.id,pool).forEach(c=>walk(c,depth+1))};
   topLevelFiltered.filter(t=>!t.parentId).forEach(t=>walk(t,0));
   // A subtask whose parent doesn't happen to match this view's own filter (e.g. parent moved to a
@@ -207,7 +208,7 @@ const buildNested=(topLevelFiltered,pool)=>{
   return rows;
 };
 // Shared row renderer for the four list-style views that support nesting/drag-to-indent
-const renderNested=(list,pool,p)=>buildNested(list,pool).map(({task,depth})=>(
+const renderNested=(list,pool,p)=>buildNested(list,pool,p.sharedSeen).map(({task,depth})=>(
   <TaskRow key={task.id} task={task} depth={depth} childCount={childrenOf(task.id,pool).length}
     onComplete={p.onComplete} onEdit={p.onEdit} projects={p.projects} showProject={p.showProject} showCreated={p.showCreated}
     selectMode={p.selectMode} isSelected={p.selected&&p.selected.includes(task.id)} onSelect={p.onSelect} onLongPress={p.onLongPress}
@@ -269,6 +270,8 @@ function App(){
   const [view,setView]=useState({tab:'today',prjId:null,lbl:null}); // tab: today|inbox|browse|project|label|search|settings|goals|filters
   const [editTask,setEditTask]=useState(null);
   const [showQuickAdd,setShowQuickAdd]=useState(false);
+  const [quickAddSectionId,setQuickAddSectionId]=useState(null);
+  const openQuickAddForSection=sectionId=>{setQuickAddSectionId(sectionId);setShowQuickAdd(true)};
   const [searchQ,setSearchQ]=useState('');
   const [gcalCid,setGcalCid]=useState(()=>ls.get('gcal_cid',''));
   const [gcalOk,setGcalOk]=useState(false);
@@ -422,8 +425,12 @@ function App(){
     const target=tasks.find(t=>t.id===targetId);
     const outdenting=dragged.parentId===targetId;
     const newParentId=outdenting?(target?target.parentId||null:null):targetId;
+    // When indenting, the task now "lives" wherever its new parent lives — sync section (and project,
+    // in case the parent is in a different project entirely, e.g. dragged via a cross-project label view)
+    // so it doesn't linger registered under its old section and render as a stray duplicate there.
+    const extra=(!outdenting&&target)?{sectionId:target.sectionId||null,project:target.project||null}:{};
     pushUndo(outdenting?'⬅ Outdented "'+dragged.text.slice(0,24)+'"':'↳ Indented under "'+(target?.text||'').slice(0,24)+'"',tasks);
-    persist(tasks.map(t=>t.id===draggedId?{...t,parentId:newParentId}:t));
+    persist(tasks.map(t=>t.id===draggedId?{...t,parentId:newParentId,...extra}:t));
   };
   // Undo: capture a snapshot of tasks *before* a destructive/bulk change, offer 5s window to restore it
   const pushUndo=(msg,prevTasks)=>{if(undoTimerRef.current)clearTimeout(undoTimerRef.current);setUndoState({msg,prevTasks});undoTimerRef.current=setTimeout(()=>setUndoState(null),5000)};
@@ -546,11 +553,12 @@ function App(){
         {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects} customFilters={customFilters} onSaveFilters={persistFilters}/>}
         {view.tab==='customFilter' &&<CustomFilterView filter={view.filter} tasks={active} projects={projects} onBack={()=>nav('filters')} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} onDelFilter={id=>{persistFilters(customFilters.filter(f=>f.id!==id));nav('filters')}}/>}
         {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
-        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection}/>}
+        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection} onOpenQuickAdd={openQuickAddForSection}/>}
         {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
+        {view.tab==='eisenhower' &&<EisenhowerView tasks={active} onEdit={setEditTask} onComplete={complete} projects={projects}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
         {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
         </div>
@@ -662,7 +670,7 @@ function App(){
       </nav>
 
       {/* Quick Add */}
-      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>setShowQuickAdd(false)} projects={projects} labels={labels} ctxProject={ctxProject} sections={sections} allTasks={tasks}/>}
+      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>{setShowQuickAdd(false);setQuickAddSectionId(null)}} projects={projects} labels={labels} ctxProject={ctxProject} ctxSection={quickAddSectionId?sections.find(s=>s.id===quickAddSectionId):null} sections={sections} allTasks={tasks}/>}
       {/* Task Edit Modal */}
       {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections} onAddChildTask={text=>addTask({text,parentId:editTask.id,project:editTask.project,sectionId:editTask.sectionId,status:editTask.status==='inbox'?'active':editTask.status})} onCompleteChild={complete} onOutdentChild={id=>{const child=tasks.find(x=>x.id===id);const parent=child&&tasks.find(x=>x.id===child.parentId);pushUndo('⬅ Outdented sub-task',tasks);persist(tasks.map(x=>x.id===id?{...x,parentId:parent?parent.parentId||null:null}:x))}} onDelChild={del}/>}
       </div>
@@ -702,6 +710,8 @@ function useRowDrag(onReparent){
 /* ── Task Row ────────────────────────────────────────── */
 function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress,depth=0,childCount=0,dragId,hoverId,onRowDown,onRowMove,onRowUp}){
   const done=task.status==='completed';
+  const isHeading=task.text.trim().startsWith('*');
+  const displayText=isHeading?task.text.trim().slice(1).trim():task.text;
   const ep=effPri(task);
   const auto=!task.priority&&daysOver(task.dueDate)>=1;
   const prj=task.project?projects.find(p=>p.name===task.project||p.id===task.project):null;
@@ -725,7 +735,7 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
   const isDropTarget=hoverId===task.id;
 
   return(
-    <div data-taskrow={task.id} className={'bg-white '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')+(isBeingDragged?' opacity-30':'')+(isDropTarget?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={depth?{marginLeft:depth*18}:undefined}>
+    <div data-taskrow={task.id} className={'bg-white select-none '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')+(isBeingDragged?' opacity-30':'')+(isDropTarget?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={{WebkitTouchCallout:'none',WebkitUserSelect:'none',userSelect:'none',touchAction:(selectMode&&isSelected)?'none':'auto',...(depth?{marginLeft:depth*18}:{})}}>
       <div className="flex gap-3 px-4 py-3" onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={endTouch} onTouchMove={moveTouch} onMouseDown={startLP} onMouseMove={moveTouch} onMouseUp={endTouch} onMouseLeave={cancelLP}>
         {depth>0&&<span className="text-stone-300 flex-shrink-0 select-none" style={{marginTop:2}}>↳</span>}
         {/* Priority circle / select checkbox */}
@@ -733,6 +743,8 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
           <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
             {isSelected&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
           </div>
+        ):isHeading?(
+          <div className="mt-0.5 w-5 h-5 flex-shrink-0"/>
         ):(
         <button onClick={ev=>{ev.stopPropagation();onComplete(task.id)}}
           className="mt-0.5 w-5 h-5 rounded-full flex-shrink-0 flex items-center justify-center transition-all"
@@ -741,7 +753,7 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
         </button>
         )}
         <div className="flex-1 min-w-0">
-          <p className={'text-sm leading-snug text-stone-800 '+(done?'line-through text-stone-400':'')}>{task.text}</p>
+          <p className={isHeading?'text-sm font-black text-stone-500 uppercase tracking-wide leading-snug':'text-sm leading-snug text-stone-800 '+(done?'line-through text-stone-400':'')}>{displayText}</p>
           <div className="flex flex-wrap items-center gap-2 mt-1">
             {task.dueDate&&(
               <span className={'text-[11px] font-semibold '+(isOverdue(task.dueDate)&&!done?'text-red-500':task.dueDate===todayISO()?'text-emerald-600':'text-stone-400')}>
@@ -848,7 +860,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
               <div className="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-lg">J</div>
               <div><p className="text-white font-black text-base">Jayesh Bhagat</p><p className="text-stone-400 text-xs">Site-in-Charge · WWC</p></div>
             </div>
-            {[{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
+            {[{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
               <button key={l} onClick={()=>{onNav(tab);setShowProfile(false)}} className="flex items-center gap-3 py-3 text-stone-300 text-sm font-semibold border-b border-stone-800">
                 <span style={{fontSize:18}}>{ico}</span>{l}
               </button>
@@ -1187,19 +1199,18 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
 }
 
 /* ── Project View ────────────────────────────────────── */
-function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections,onAddTask,onQuickMoveSection}){
+function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections,onAddTask,onQuickMoveSection,onOpenQuickAdd}){
   if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
   const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const rowDrag=useRowDrag(onReparent);
+  const nestSeen=new Set(); // shared across every section's renderNested call this render — belt-and-suspenders against the same task rendering twice across sections
   const [showDone,setShowDone]=useState(false);
   const [viewMode,setViewModeRaw]=useState(()=>ls.get('viewMode_'+prj.id,'list')); // 'list' | 'kanban' — remembered per project, survives reload
   const setViewMode=m=>{setViewModeRaw(m);ls.set('viewMode_'+prj.id,m)};
   const [addingSection,setAddingSection]=useState(false);
   const [newSecName,setNewSecName]=useState('');
   const [secMenu,setSecMenu]=useState(null);
-  const [addTaskToSec,setAddTaskToSec]=useState(null); // sectionId currently showing an inline "add task" box
-  const [newSecTaskText,setNewSecTaskText]=useState('');
   const [sortKey,setSortKey]=useState('manual');
   const [asc,setAsc]=useState(true);
   const [dragTaskId,setDragTaskId]=useState(null);
@@ -1319,7 +1330,8 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
       {viewMode==='list'&&active.length>0&&(
         <React.Fragment>
           {noSection.length>0&&prjSections.length>0&&<div className="px-4 py-1.5"><span className="text-[10px] font-black text-stone-400 uppercase tracking-widest">No Section</span></div>}
-          {renderNested(noSection,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,...rowDrag})}
+          {renderNested(noSection,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,sharedSeen:nestSeen,...rowDrag})}
+          <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(null)} className="w-full text-left px-4 py-2 text-xs font-bold text-stone-400">+ Add task</button>
           {prjSections.map((sec,si)=>{
             const secTasks=inSection(sec.id);
             return(
@@ -1336,22 +1348,16 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
                   <div className="px-4 py-2 bg-stone-50 space-y-1">
                     <input defaultValue={sec.name} onBlur={e=>renameSection(sec.id,e.target.value.trim()||sec.name)} className="w-full px-2 py-1.5 text-xs border border-stone-200 rounded-lg bg-white mb-1.5"/>
                     <div className="grid grid-cols-2 gap-1.5">
-                      <button onClick={()=>{setSecMenu(null);setAddTaskToSec(sec.id);setNewSecTaskText('')}} className="text-xs font-semibold text-stone-600 bg-white border border-stone-200 rounded-lg py-1.5">+ Add task</button>
+                      <button onClick={()=>{setSecMenu(null);onOpenQuickAdd&&onOpenQuickAdd(sec.id)}} className="text-xs font-semibold text-stone-600 bg-white border border-stone-200 rounded-lg py-1.5">+ Add task</button>
                       <button onClick={()=>dupSection(sec.id)} className="text-xs font-semibold text-stone-600 bg-white border border-stone-200 rounded-lg py-1.5">📋 Duplicate</button>
                       <button onClick={()=>archiveSection(sec.id)} className="text-xs font-semibold text-stone-600 bg-white border border-stone-200 rounded-lg py-1.5">📦 Archive</button>
                       <button onClick={()=>delSection(sec.id)} className="text-xs font-semibold text-red-500 bg-white border border-red-200 rounded-lg py-1.5">🗑️ Delete</button>
                     </div>
                   </div>
                 )}
-                {addTaskToSec===sec.id&&(
-                  <div className="px-4 py-2 bg-stone-50 flex gap-2">
-                    <input autoFocus value={newSecTaskText} onChange={e=>setNewSecTaskText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:sec.id,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}}} placeholder="Task name…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white focus:outline-none"/>
-                    <button onClick={()=>{if(newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:sec.id,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}}} className="px-3 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">Add</button>
-                    <button onClick={()=>setAddTaskToSec(null)} className="px-2 text-stone-400 text-xs">✕</button>
-                  </div>
-                )}
                 {secTasks.length===0&&<p className="px-4 py-2 text-[11px] text-stone-300">No tasks yet</p>}
-                {renderNested(secTasks,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,...rowDrag})}
+                {renderNested(secTasks,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,sharedSeen:nestSeen,...rowDrag})}
+                <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-4 py-2 text-xs font-bold text-stone-400">+ Add task</button>
               </div>
             );
           })}
@@ -1374,14 +1380,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
                 </div>
               </div>
             ))}
-            {addTaskToSec==='__none__'?(
-              <div className="flex gap-1.5 mt-1">
-                <input autoFocus value={newSecTaskText} onChange={e=>setNewSecTaskText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:null,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}if(e.key==='Escape')setAddTaskToSec(null)}} placeholder="Task name…" className="flex-1 min-w-0 px-2 py-1.5 text-xs border border-stone-200 rounded-lg bg-white focus:outline-none"/>
-                <button onClick={()=>{if(newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:null,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}}} className="px-2 bg-emerald-600 text-white rounded-lg text-xs font-bold flex-shrink-0">Add</button>
-              </div>
-            ):(
-              <button onClick={()=>{setAddTaskToSec('__none__');setNewSecTaskText('')}} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
-            )}
+            <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(null)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
           </div>
           {prjSections.map(sec=>(
             <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
@@ -1395,14 +1394,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
                   </div>
                 </div>
               ))}
-              {addTaskToSec===sec.id?(
-                <div className="flex gap-1.5 mt-1">
-                  <input autoFocus value={newSecTaskText} onChange={e=>setNewSecTaskText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:sec.id,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}if(e.key==='Escape')setAddTaskToSec(null)}} placeholder="Task name…" className="flex-1 min-w-0 px-2 py-1.5 text-xs border border-stone-200 rounded-lg bg-white focus:outline-none"/>
-                  <button onClick={()=>{if(newSecTaskText.trim()){onAddTask&&onAddTask({text:newSecTaskText.trim(),project:prj.name,sectionId:sec.id,status:'active'});setNewSecTaskText('');setAddTaskToSec(null)}}} className="px-2 bg-emerald-600 text-white rounded-lg text-xs font-bold flex-shrink-0">Add</button>
-                </div>
-              ):(
-                <button onClick={()=>{setAddTaskToSec(sec.id);setNewSecTaskText('')}} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
-              )}
+              <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
             </div>
           ))}
         </div>
@@ -1702,6 +1694,59 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
 
 /* ── Goals View ──────────────────────────────────────── */
 /* ── Goals View ──────────────────────────────────────── */
+/* ── 🧭 Eisenhower Matrix View ──────────────────────── */
+function EisenhowerView({tasks,onEdit,onComplete,projects}){
+  const QUADS=[
+    {k:'do',l:'Do First',sub:'Urgent + Important',color:'#ef4444',bg:'bg-red-50'},
+    {k:'schedule',l:'Schedule',sub:'Important, not urgent',color:'#3b82f6',bg:'bg-blue-50'},
+    {k:'delegate',l:'Delegate',sub:'Urgent, not important',color:'#f97316',bg:'bg-orange-50'},
+    {k:'eliminate',l:'Eliminate',sub:'Neither',color:'#9ca3af',bg:'bg-stone-50'},
+  ];
+  const unsorted=tasks.filter(t=>!t.eisenhower);
+  return(
+    <div className="pb-24">
+      <div className="px-4 pt-5 pb-4">
+        <h2 className="text-3xl font-black text-stone-900">🧭 Eisenhower Matrix</h2>
+        <p className="text-sm text-stone-400 mt-0.5">Sort by urgency vs. importance. Set a task's quadrant from its Details pills.</p>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 px-4">
+        {QUADS.map(q=>{
+          const qTasks=tasks.filter(t=>t.eisenhower===q.k);
+          return(
+            <div key={q.k} className={'rounded-2xl p-3 '+q.bg}>
+              <div className="flex items-baseline justify-between mb-2">
+                <p className="text-sm font-black" style={{color:q.color}}>{q.l}</p>
+                <p className="text-[10px] text-stone-400">{q.sub} · {qTasks.length}</p>
+              </div>
+              {!qTasks.length&&<p className="text-xs text-stone-300 py-3 text-center">No tasks here</p>}
+              {qTasks.map(t=>(
+                <div key={t.id} onClick={()=>onEdit(t)} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm flex gap-2 items-start">
+                  <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:q.color}}/>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-stone-800 leading-snug">{t.text}</p>
+                    {t.dueDate&&<p className="text-[10px] text-stone-400 mt-0.5">📅 {fmtDate(t.dueDate)}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+      </div>
+      {unsorted.length>0&&(
+        <div className="mt-4 px-4">
+          <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">Not yet sorted ({unsorted.length})</p>
+          {unsorted.slice(0,30).map(t=>(
+            <div key={t.id} onClick={()=>onEdit(t)} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm border border-stone-100">
+              <p className="text-xs font-semibold text-stone-700">{t.text}</p>
+            </div>
+          ))}
+          {unsorted.length>30&&<p className="text-[10px] text-stone-300 text-center mt-1">+{unsorted.length-30} more — use Filters/Labels or a project to narrow this down</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GoalsView({goals,allTasks,doneTasks,onEdit,onComplete,labels,projects,onAdd}){
   const [addSubFor,setAddSubFor]=useState(null);
   const [subText,setSubText]=useState('');
@@ -2000,7 +2045,7 @@ const parseSection=(v,secList)=>{
   if(!match)return{text:v,sectionName:null};
   return{text:v.replace(sm[0],'').replace(/\s+/g,' ').trim(),sectionName:match.name};
 };
-function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections,allTasks}){
+function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,allTasks}){
   const [text,setText]=useState('');
   const [parsed,setParsed]=useState({text:'',dueDate:null,dueTime:null,priority:null,labels:[],project:ctxProject?ctxProject.name:null,sectionName:null});
   const [suggs,setSuggs]=useState([]);
@@ -2048,7 +2093,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections,allTasks}){
     const proj=p.project||(ctxProject?ctxProject.name:null);
     const secList=secListFor(proj);
     const sp=parseSection(p.text,secList);
-    const secObj=secList.find(s=>s.name===sp.sectionName);
+    const secObj=secList.find(s=>s.name===sp.sectionName)||(sp.sectionName?null:ctxSection);
     const finalDate=manDate!==undefined?manDate:p.dueDate;
     const finalTime=manTime!==undefined?manTime:p.dueTime;
     const finalRecur=manRecur!==undefined?manRecur:null;
@@ -2069,7 +2114,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,sections,allTasks}){
         <div className="flex justify-center mb-2"><div className="w-10 h-1 bg-stone-200 rounded-full"/></div>
         <div className="flex items-center justify-between mb-3">
           <button onClick={onClose} className="text-stone-400 text-2xl font-bold px-1">‹</button>
-          <p className="text-xs font-black text-stone-400 uppercase tracking-widest">Quick Add{ctxProject&&<span className="text-indigo-500 ml-2">→ {ctxProject.name}</span>}</p>
+          <p className="text-xs font-black text-stone-400 uppercase tracking-widest">Quick Add{ctxProject&&<span className="text-indigo-500 ml-2">→ {ctxProject.name}{ctxSection?' / '+ctxSection.name:''}</span>}</p>
           <button onClick={handleAdd} disabled={!text.trim()} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white disabled:opacity-30 flex-shrink-0">
             <svg width="16" height="12" viewBox="0 0 16 12" fill="none"><path d="M1 6L5.5 10.5L15 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
@@ -2146,6 +2191,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
   const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null,notes:task.notes||'',sectionId:task.sectionId||null,comments:task.comments||[]});
   const [newLbl,setNewLbl]=useState('');const [newSub,setNewSub]=useState('');const [newComment,setNewComment]=useState('');
   const [showDatePick,setShowDatePick]=useState(false);
+  const [sheet,setSheet]=useState(null);
   const s=(k,v)=>setT(p=>({...p,[k]:v}));
   const addComment=()=>{if(!newComment.trim())return;s('comments',[...(t.comments||[]),{id:uid(),text:newComment.trim(),createdAt:new Date().toISOString()}]);setNewComment('')};
   const setProject=name=>{const np=t.project===name?null:name;setT(p=>({...p,project:np,sectionId:np!==p.project?null:p.sectionId}))};
@@ -2176,86 +2222,19 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
           <textarea value={t.notes||''} onChange={e=>s('notes',e.target.value)} placeholder="Add notes…" className="w-full text-sm text-stone-500 bg-transparent resize-none focus:outline-none mt-1 leading-relaxed" rows={2}/>
 
           <div className="border-t border-stone-100 mt-3 pt-3 space-y-3">
-            {/* Due date — minimal pill, opens the full-screen date/time picker */}
+            {/* Minimal pill row — tap any pill to open its picker, matching Quick Add's compact style */}
             <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Due Date</p>
-              <div className="flex flex-wrap gap-1.5 mb-2">{qd.map(({l,v})=><Chip key={l} on={t.dueDate===v&&v!==null} click={()=>s('dueDate',v)}>{l}</Chip>)}</div>
-              <button onClick={()=>setShowDatePick(true)} className="w-full flex items-center gap-2 px-3 py-2.5 text-sm border border-stone-200 rounded-xl bg-stone-50 text-left">
-                <span>📅</span>
-                <span className={t.dueDate?'text-stone-700 font-semibold':'text-stone-400'}>{t.dueDate?fmtFull(t.dueDate)+(t.dueTime?' · '+fmtTime(t.dueTime):''):'No date'}{t.recurring?' · 🔄 '+RECUR_OPT[t.recurring]:''}</span>
-              </button>
-            </div>
-            {/* Deadline — separate from "when I'll work on it" due date */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Deadline <span className="normal-case text-stone-300 font-semibold">(hard cutoff, optional)</span></p>
-              <div className="flex gap-2">
-                <input type="date" value={t.deadline||''} onChange={e=>s('deadline',e.target.value||null)} className="flex-1 px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
-                {t.deadline&&<button onClick={()=>s('deadline',null)} className="px-3 py-2 text-xs text-stone-400 font-bold">Clear</button>}
-              </div>
-            </div>
-            {/* Duration */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Duration</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.duration} click={()=>s('duration',null)}>None</Chip>
-                {[15,30,45,60,90,120].map(m=><Chip key={m} on={t.duration===m} click={()=>s('duration',t.duration===m?null:m)}>{m<60?m+'m':(m/60)+'h'}</Chip>)}
-              </div>
-            </div>
-            {/* Priority */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Priority</p>
-              <div className="flex gap-2">
-                <button onClick={()=>s('priority',null)} className={'flex-1 py-2 rounded-xl text-xs font-bold border '+(t.priority?'bg-white text-stone-400 border-stone-200':'bg-stone-100 text-stone-600 border-stone-200')}>None</button>
-                {['P1','P2','P3','P4'].map(p=>(
-                  <button key={p} onClick={()=>s('priority',t.priority===p?null:p)}
-                    className={'flex-1 py-2 rounded-xl text-xs font-black border '+(t.priority===p?'text-white':'bg-white border-stone-200')}
-                    style={{background:t.priority===p?PRI_COLOR[p]:'',borderColor:t.priority===p?PRI_COLOR[p]:'',color:t.priority===p?'white':PRI_COLOR[p]}}>
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {/* Project */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Project</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.project} click={()=>setProject(null)}>📥 Inbox</Chip>
-                {prjTree(projects).map(p=>(
-                  <button key={p.id||p.name} onClick={()=>setProject(p.name)}
-                    className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(t.project===p.name?'text-white':'bg-white text-stone-600 border-stone-200')}
-                    style={{background:t.project===p.name?p.color:'',borderColor:t.project===p.name?p.color:''}}>
-                    {p.depth>0?'↳ '.repeat(1):''}{p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {/* Section (only when a project with sections is selected) */}
-            {prj&&prjSections.length>0&&(
-              <div>
-                <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Section</p>
-                <div className="flex flex-wrap gap-1.5">
-                  <Chip on={!t.sectionId} click={()=>s('sectionId',null)}>No section</Chip>
-                  {prjSections.map(sec=><Chip key={sec.id} on={t.sectionId===sec.id} click={()=>s('sectionId',t.sectionId===sec.id?null:sec.id)}>📂 {sec.name}</Chip>)}
-                </div>
-              </div>
-            )}
-            {/* Labels */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Labels</p>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {labels.map(l=><Chip key={l} on={(t.labels||[]).includes(l)} click={()=>{const c=t.labels||[];s('labels',c.includes(l)?c.filter(x=>x!==l):[...c,l])}}># {l}</Chip>)}
-              </div>
-              <div className="flex gap-2">
-                <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addL()} placeholder="Add label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
-                <button onClick={addL} className="px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black">Add</button>
-              </div>
-            </div>
-            {/* Goal */}
-            <div>
-              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Goal Timeline</p>
-              <div className="flex flex-wrap gap-1.5">
-                <Chip on={!t.goalType} click={()=>s('goalType',null)}>Not a Goal</Chip>
-                {GOAL_TIERS.map(g=><Chip key={g.k} on={t.goalType===g.k} click={()=>s('goalType',t.goalType===g.k?null:g.k)}>{g.l}</Chip>)}
+              <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Details</p>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={()=>setShowDatePick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.dueDate?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-white text-stone-500 border-stone-200')}>📅 {t.dueDate?fmtDate(t.dueDate)+(t.dueTime?' '+fmtTime(t.dueTime):''):'Date'}</button>
+                <button onClick={()=>setSheet('priority')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border bg-white border-stone-200" style={{color:t.priority?PRI_COLOR[t.priority]:'#78716c'}}>🚩 {t.priority||'Priority'}</button>
+                <button onClick={()=>setSheet('project')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.project?'text-white border-transparent':'bg-white text-stone-500 border-stone-200')} style={t.project&&prj?{background:prj.color}:{}}>📁 {t.project||'Inbox'}</button>
+                {prj&&prjSections.length>0&&<button onClick={()=>setSheet('section')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.sectionId?'bg-violet-50 text-violet-700 border-violet-200':'bg-white text-stone-500 border-stone-200')}>📂 {t.sectionId?(prjSections.find(sc=>sc.id===t.sectionId)?.name||'Section'):'Section'}</button>}
+                <button onClick={()=>setSheet('labels')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+((t.labels||[]).length?'bg-stone-100 text-stone-700 border-stone-200':'bg-white text-stone-500 border-stone-200')}>🏷️ {(t.labels||[]).length?t.labels.map(l=>'#'+l).join(' '):'Labels'}</button>
+                <button onClick={()=>setSheet('deadline')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.deadline?'bg-orange-50 text-orange-600 border-orange-200':'bg-white text-stone-500 border-stone-200')}>🏁 {t.deadline?fmtDate(t.deadline):'Deadline'}</button>
+                <button onClick={()=>setSheet('duration')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.duration?'bg-stone-100 text-stone-700 border-stone-200':'bg-white text-stone-500 border-stone-200')}>⏱ {t.duration?(t.duration<60?t.duration+'m':(t.duration/60)+'h'):'Duration'}</button>
+                <button onClick={()=>setSheet('eisenhower')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.eisenhower?'bg-indigo-50 text-indigo-700 border-indigo-200':'bg-white text-stone-500 border-stone-200')}>🧭 {t.eisenhower?EISEN_OPT[t.eisenhower]:'Quadrant'}</button>
+                <button onClick={()=>setSheet('goal')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.goalType?'bg-purple-50 text-purple-700 border-purple-200':'bg-white text-stone-500 border-stone-200')}>⭐ {t.goalType?(GOAL_TIERS.find(g=>g.k===t.goalType)?.l||'Goal'):'Goal'}</button>
               </div>
             </div>
             {/* Sub-tasks — these are now real, independent tasks (parentId), same as any other task.
@@ -2308,6 +2287,79 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
           </div>
         </div>
       </div>
+      {sheet&&(
+        <div className="fixed inset-0 z-[60] flex items-end" onClick={()=>setSheet(null)}>
+          <div className="absolute inset-0 bg-black/40"/>
+          <div className="relative bg-white rounded-t-3xl p-5 w-full max-h-[70vh] overflow-y-auto" onClick={e=>e.stopPropagation()}>
+            {sheet==='priority'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">🚩 Priority</p>
+              <div className="flex flex-wrap gap-2">
+                <Chip on={!t.priority} click={()=>{s('priority',null);setSheet(null)}}>None</Chip>
+                {['P1','P2','P3','P4'].map(p=><Chip key={p} on={t.priority===p} click={()=>{s('priority',p);setSheet(null)}}>{p}</Chip>)}
+              </div>
+            </React.Fragment>)}
+            {sheet==='project'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">📁 Project</p>
+              <div className="flex flex-wrap gap-2">
+                <Chip on={!t.project} click={()=>{setProject(null);setSheet(null)}}>📥 Inbox</Chip>
+                {prjTree(projects).map(p=>(
+                  <button key={p.id||p.name} onClick={()=>{setProject(p.name);setSheet(null)}}
+                    className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(t.project===p.name?'text-white':'bg-white text-stone-600 border-stone-200')}
+                    style={{background:t.project===p.name?p.color:'',borderColor:t.project===p.name?p.color:'',marginLeft:p.depth*10}}>
+                    {p.depth>0?'↳ ':''}{p.name}
+                  </button>
+                ))}
+              </div>
+            </React.Fragment>)}
+            {sheet==='section'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">📂 Section</p>
+              <div className="flex flex-wrap gap-2">
+                <Chip on={!t.sectionId} click={()=>{s('sectionId',null);setSheet(null)}}>No section</Chip>
+                {prjSections.map(sec=><Chip key={sec.id} on={t.sectionId===sec.id} click={()=>{s('sectionId',sec.id);setSheet(null)}}>📂 {sec.name}</Chip>)}
+              </div>
+            </React.Fragment>)}
+            {sheet==='labels'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">🏷️ Labels</p>
+              <div className="flex flex-wrap gap-2 mb-3">
+                {labels.map(l=><Chip key={l} on={(t.labels||[]).includes(l)} click={()=>{const c=t.labels||[];s('labels',c.includes(l)?c.filter(x=>x!==l):[...c,l])}}># {l}</Chip>)}
+                {!labels.length&&<p className="text-xs text-stone-400">No labels yet.</p>}
+              </div>
+              <div className="flex gap-2">
+                <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addL()} placeholder="Add label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
+                <button onClick={addL} className="px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black">Add</button>
+              </div>
+            </React.Fragment>)}
+            {sheet==='deadline'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">🏁 Deadline <span className="text-stone-300 font-semibold normal-case">(hard cutoff, optional)</span></p>
+              <div className="flex gap-2">
+                <input type="date" value={t.deadline||''} onChange={e=>s('deadline',e.target.value||null)} className="flex-1 px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 text-stone-700"/>
+                {t.deadline&&<button onClick={()=>s('deadline',null)} className="px-3 py-2 text-xs text-stone-400 font-bold">Clear</button>}
+              </div>
+            </React.Fragment>)}
+            {sheet==='duration'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">⏱ Duration</p>
+              <div className="flex flex-wrap gap-2">
+                <Chip on={!t.duration} click={()=>{s('duration',null);setSheet(null)}}>None</Chip>
+                {[15,30,45,60,90,120].map(m=><Chip key={m} on={t.duration===m} click={()=>{s('duration',m);setSheet(null)}}>{m<60?m+'m':(m/60)+'h'}</Chip>)}
+              </div>
+            </React.Fragment>)}
+            {sheet==='eisenhower'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">🧭 Eisenhower Quadrant</p>
+              <div className="grid grid-cols-2 gap-2">
+                <Chip on={!t.eisenhower} click={()=>{s('eisenhower',null);setSheet(null)}}>None</Chip>
+                {Object.entries(EISEN_OPT).map(([k,l])=><Chip key={k} on={t.eisenhower===k} click={()=>{s('eisenhower',k);setSheet(null)}}>{l}</Chip>)}
+              </div>
+            </React.Fragment>)}
+            {sheet==='goal'&&(<React.Fragment>
+              <p className="text-sm font-black text-stone-800 mb-3">⭐ Goal Timeline</p>
+              <div className="flex flex-wrap gap-2">
+                <Chip on={!t.goalType} click={()=>{s('goalType',null);setSheet(null)}}>Not a Goal</Chip>
+                {GOAL_TIERS.map(g=><Chip key={g.k} on={t.goalType===g.k} click={()=>{s('goalType',g.k);setSheet(null)}}>{g.l}</Chip>)}
+              </div>
+            </React.Fragment>)}
+          </div>
+        </div>
+      )}
       {showDatePick&&<DateTimePicker initDate={t.dueDate} initTime={t.dueTime} initRecur={t.recurring} taskDates={(allTasks||[]).map(x=>x.dueDate).filter(Boolean)} onSave={({dueDate,dueTime,recurring})=>{s('dueDate',dueDate);s('dueTime',dueTime);s('recurring',recurring)}} onClose={()=>setShowDatePick(false)}/>}
     </div>
   );
@@ -2336,7 +2388,7 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
             <span className={'text-xs font-bold px-2 py-1 rounded-full '+(driveOk?'bg-emerald-100 text-emerald-700':connected?'bg-red-100 text-red-700':'bg-stone-100 text-stone-500')}>{driveOk?'✓ Connected':connected?'⚠️ Drive failing':'Not connected'}</span>
             {driveOk&&<span className="text-xs text-stone-400">Drive + Calendar active</span>}
           </div>
-          {!connected&&<React.Fragment>
+          {!cid&&<React.Fragment>
             <div className="bg-stone-50 rounded-xl p-3 mb-3 text-xs text-stone-600 space-y-1">
               <p className="font-bold">Setup (once):</p>
               <p>1. console.cloud.google.com → New project</p>
@@ -2346,7 +2398,11 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
             </div>
             <input value={inp} onChange={e=>setInp(e.target.value)} placeholder="xxxx.apps.googleusercontent.com" className="w-full px-3 py-2.5 text-xs border border-stone-200 rounded-xl bg-stone-50 mb-2"/>
             <button onClick={()=>setCid(inp.trim())} disabled={!inp.trim()||!isHttps} className="w-full py-2.5 bg-stone-100 text-stone-700 rounded-xl text-xs font-bold disabled:opacity-40 mb-2">Save Client ID</button>
-            {cid&&isHttps&&<button onClick={onConnect} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black">🔐 Sign in with Google</button>}
+          </React.Fragment>}
+          {cid&&!connected&&isHttps&&<React.Fragment>
+            <p className="text-xs text-stone-400 mb-2">Your Google session expired — this is just a one-tap reconnect, not a re-setup.</p>
+            <button onClick={onConnect} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black mb-2">🔐 Reconnect Google</button>
+            <button onClick={()=>setCid('')} className="w-full py-2 text-[11px] text-stone-300 font-semibold">Use a different Client ID</button>
           </React.Fragment>}
           {connected&&!driveOk&&(
           <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-3 text-xs text-red-700 space-y-1.5">
@@ -2487,6 +2543,7 @@ function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,in
         {item('today','🏠','Today',todayN)}
         {item('scheduled','📅','Upcoming')}
         {item('filters','🎛️','Filters & Labels')}
+        {item('eisenhower','🧭','Eisenhower Matrix')}
         {item('browse','📁','Browse')}
       </div>
       {favProjects.length>0&&(
