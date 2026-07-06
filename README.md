@@ -1,20 +1,43 @@
-# Brain Dump v6 — Setup Guide
+# Brain Dump — Setup Guide
 
-This is the merged build: v5's architecture (stable Drive sync, Today/Browse/Search/Goals views, natural-language Quick Add) combined with v4's bulk multi-select, live `#tag` autocomplete, and the Web of Thoughts cluster view — plus one bug fix.
+A single-file React + Google Drive/Calendar task app, built Todoist-style: braindump inbox, projects with sections (list or board view), sub-tasks, Quick Add with natural-language parsing, an Eisenhower Matrix, and a desktop sidebar layout alongside the mobile bottom nav.
 
-## What changed from v5 → v6
-- **Fixed a bug**: the Scheduled tab's sub-task checkboxes called an undefined function (`toggleSubTask`) and would have crashed that screen — now wired correctly.
-- **Bulk select restored** (from v4): tap **Select** in the top-right of Inbox or Scheduled to multi-select tasks, then Copy / bulk-Label / Archive / Delete from the action bar at the bottom.
-- **Live `#tag` autocomplete restored** (from v4): while typing in Quick Add, typing `#` followed by a few letters shows matching existing labels as tappable suggestions, instead of only resolving tags after you finish typing.
-- **🕸️ Web of Thoughts restored** (from v4, this had quietly disappeared in v5's redesign): a dedicated view under Browse → Web of Thoughts that shows every project and label as a "cluster" of related dumps. Tap a cluster to see all the thoughts tagged with it; each thought shows 🔗 chips for any other labels/project it also carries, so you can hop from one connected thought to the next — a lightweight Obsidian/Notion-style web of your labeled dumps, separate from the task edit form.
-- Service worker cache bumped to `gtd-v6` so installed devices pick up the new files instead of serving stale cached ones.
+## What's new in this build
 
-## What v6 keeps from v5 (the stronger base)
-- Stable Google Drive filename (`gtd_braindump.json`) with automatic recovery from older version files (`gtd_v5.json`, `gtd_v4.json`, etc.) — upgrading the app won't silently lose your data.
-- Toast notification when your Google sign-in expires, so sync failures aren't silent.
-- Natural-language Quick Add: type `check shuttering @C3 tomorrow p1 #urgent` and it auto-fills project, date, priority, and label.
-- Today / Inbox / Browse / Project / Label / Search / Scheduled / Goals / Done / Settings / Web of Thoughts views.
-- JSON Export/Import backup in Settings, independent of Google Drive.
+This build folds in a large round of fixes and features since the last README update:
+
+- **Sync overhaul.** Sync used to only pull from Drive once, on connect — two devices could drift apart until you manually pulled-to-refresh or reloaded. It now checks Drive automatically whenever you switch back to the app and every ~40 seconds while it's open. Merging is now done **task by task** (whichever device edited a *specific* task most recently wins for that task, not "whichever whole list is newer"), with deletion tombstones so a task deleted on one device doesn't quietly reappear from the other.
+- **Google reconnects are lighter.** A lapsed session used to redisplay the entire first-time setup block. Now it's a single "🔐 Reconnect Google" tap — your Client ID stays remembered. The app also proactively refreshes your access token in the background before it expires, so you should hit the reconnect screen less often in the first place.
+- **Sub-tasks are now real, independent tasks**, not a lightweight checklist trapped inside a parent. Any task can become a sub-task of any other:
+  - Long-press to select a task, then use the **⇥ Indent** / **⇤ Outdent** buttons in the selection bar — the reliable way to do this.
+  - Or drag a selected task onto another task's row to indent it there; drag it back onto its parent's row to outdent. A floating preview follows your finger and tells you what will happen before you let go.
+  - Existing old-style sub-tasks were migrated automatically the first time you opened this build — nothing was lost.
+- **Full-screen Date/Time picker**, matching Todoist's pattern: quick options (Tomorrow / Later this week / This weekend / Next week), an infinite-scrolling month calendar with task-count dots, an "Add time" step with a drag-or-tap analog clock, and Repeat — all with Save as a tick icon at the top, not a button buried at the bottom.
+- **Task edit form is now pill-based.** Date, Priority, Project, Section, Labels, Deadline, Duration, Eisenhower quadrant, and Goal are compact pills — tap one to open its picker — instead of a long scroll of always-expanded chip grids.
+- **Eisenhower Matrix is back**, reachable from the sidebar (desktop) or the profile menu (mobile): a proper 2×2 grid (Do First / Schedule / Delegate / Eliminate) with an "unsorted" list for anything you haven't quadrant-tagged yet.
+- **Kanban board, fixed and extended.** Cards can be completed directly (a tick circle, same as list view), dragged between columns with auto-scroll near the board's edges, and each column has its own "+ Add task" that opens Quick Add pre-filled with that section. A same-column no-op bug (dropping a card back where it started could visually duplicate it) is fixed.
+- **List/Board view choice is remembered per project**, including across a full app reload.
+- **Undo.** Completing, archiving, deleting, or bulk-moving tasks shows a 5-second "UNDO" toast instead of being instantly final.
+- **Pull-to-refresh** replaces the old manual "Retry Drive" / "Force sync" buttons — swipe down at the top of any list to sync.
+- **Desktop gets a real sidebar** (Todoist-style: Search, Inbox, Today, Upcoming, Filters & Labels, Eisenhower Matrix, Favorites, My Projects tree), while the bottom tab bar stays for mobile. A CSS/viewport bug that hid the mobile bottom bar under Chrome's collapsing address bar, and briefly broke list scrolling entirely, is fixed.
+- **Custom Filters** — build and save a project + label + priority combination as a named filter, sitting alongside Favorites.
+- **Sort menu** (Manual / Date / Priority / A–Z, ascending or descending) on Inbox, Project, and Label views.
+- **Upcoming** now has an expandable month grid with dot-indicators above the day-by-day agenda.
+- **Deadline** (separate from due date), **Duration**, and **Comments** fields on tasks.
+- **`*Heading` trick**: start a task's text with `*` and it displays as a bold, non-completable title row with no checkbox — handy for labeling a block of tasks without it being an actionable item itself.
+- Calendar events for completed/deleted tasks that failed to delete (e.g. during a token hiccup) now retry automatically instead of lingering on your calendar forever.
+- Fixed a broken service worker precache entry (`styles.css`, which doesn't exist in this build) that could silently prevent offline caching from installing at all.
+
+## Feature list (current state)
+
+- **Views:** Today, Inbox, Browse (Projects/Labels/Sections), Project (List or Board), Label, Search, Upcoming (week strip + month grid), Filters & Labels, Eisenhower Matrix, Goals, Web of Thoughts, Done/Archive, Settings.
+- **Quick Add:** natural-language parsing (`tomorrow 3pm @Project /Section #label p1`) plus manual Date/Priority/Labels pills for when you'd rather tap than type.
+- **Projects:** nested sub-projects, sections within a project, List/Board toggle (remembered per project), section-level ⋯ menu (add task / rename / duplicate / archive / delete), section reordering.
+- **Tasks:** due date + time, deadline, duration, priority (with auto-escalation the longer an overdue task sits), labels, recurring (daily/weekly/monthly/yearly), comments, real nested sub-tasks, Eisenhower quadrant, goal timeline.
+- **Bulk actions** (long-press to select): move up/down, indent/outdent, copy, label, move to project/section, archive, delete — each undoable.
+- **Sync:** Google Drive (task storage, appDataFolder, survives a phone reset) + Google Calendar (auto-creates/removes all-day events as you assign/complete/delete dated tasks).
+- **Offline-first:** works without Drive connected; local storage is the source of truth, Drive is a sync layer on top.
+- **Responsive:** sidebar on desktop-width screens, bottom tab bar on mobile.
 
 ---
 
@@ -30,7 +53,7 @@ This is the merged build: v5's architecture (stable Drive sync, Today/Browse/Sea
 
 ### Alternative: GitHub Pages
 1. Create a GitHub account and a new repository
-2. Upload all 5 files to the repo
+2. Upload all 4 files (`index.html`, `manifest.json`, `sw.js`, `icon.svg`) to the repo
 3. Go to Settings → Pages → Deploy from main branch
 4. Your URL: `yourusername.github.io/repo-name`
 5. Follow steps 4–6 above
@@ -61,14 +84,15 @@ Once the app is live on HTTPS, you can link it to Google Calendar and Drive (Dri
 10. Copy the **Client ID** shown (ends in `.apps.googleusercontent.com`)
 
 ### 2b. Connect in the app
-1. Open your app → tap **⚙️ Settings** (bottom nav "More")
-2. Paste your Client ID in the field
-3. Tap **Save Client ID**
-4. Tap **🔐 Sign in with Google**
-5. Choose your Google account and allow Calendar + Drive access
-6. Done! Settings now shows **✓ Connected**
+1. Open your app → tap **⚙️ Settings** (bottom nav, or sidebar on desktop)
+2. Paste your Client ID in the field → **Save Client ID**
+3. Tap **🔐 Sign in with Google**
+4. Choose your Google account and allow Calendar + Drive access
+5. Done! Settings now shows **✓ Connected**
 
-If you see "Signed in, but Drive isn't responding," it usually means the Drive API wasn't enabled in step 5, or your sign-in predates Drive access being requested — tap **Reconnect Google** to fix the latter.
+This is genuinely a one-time setup. If your session later expires, you'll only see a single "Reconnect Google" button — not this whole flow again.
+
+If you see "Signed in, but Drive isn't responding," it usually means the Drive API wasn't enabled in step 5 — reconnect after enabling it.
 
 ---
 
@@ -77,71 +101,68 @@ If you see "Signed in, but Drive isn't responding," it usually means the Drive A
 | Action | What happens |
 |--------|-------------|
 | Assign a date to a task | Auto-creates an all-day event in Google Calendar |
-| Complete a task | Calendar event is removed |
-| Delete a task | Event deleted from Calendar |
+| Complete or delete a task | Its Calendar event is removed (retried automatically if the first attempt fails) |
 | Date changed | Event recreated in Calendar |
 | Sign in on a new device | App finds your stable Drive file (or recovers from an older version's file) and restores all tasks |
-| Tap "Force sync Calendar" in Settings | Pushes all dated tasks that aren't in Calendar yet |
-| Tap "Retry Drive connection" in Settings | Re-attempts the Drive handshake without a full re-login |
+| Two devices edit independently | Each **task** is merged individually by whichever edit is newest — not a whole-list overwrite |
+| A task is deleted on one device | A tombstone record propagates the deletion to your other devices instead of the task reappearing |
+| Reopen the app / switch back to it | Syncs automatically — no manual step needed |
+| Pull down at the top of a list | Manual sync, if you want to force it |
 
 ---
 
 ## Using the app
 
-- **🏠 Today** — Overdue, due today, and the next 7 days, at a glance
-- **📥 Inbox** — Tasks not yet assigned to a project. Tap **Select** to multi-select for bulk Copy / Label / Archive / Delete
-- **📁 Browse** — Drill into Projects, Labels, Scheduled, Web of Thoughts, Goals, Completed
-- **📅 Scheduled** — Every dated task grouped by Overdue / Today / Tomorrow / This Week / Later. Also supports **Select** for bulk actions
-- **🕸️ Web of Thoughts** — Reachable via Browse. Shows projects and labels as connection clusters; tap one to see every thought tagged with it, then tap a 🔗 chip on any thought to jump to another cluster it's also connected to
-- **🔍 Search** — Type 2+ characters to search across all tasks
-- **🌟 Goals** — Tasks tagged with a Goal Timeline (Short/Medium/Long/Very Long-term)
-- **✅ Done** — Completed tasks (undo available) and Archive (restore available)
+- **🏠 Today** — Overdue, due today, and the next 7 days
+- **📥 Inbox** — Braindump anything, unfiled. Auto-archives after 7 days if not moved to a project
+- **📁 Browse** — Projects (with sub-projects and sections), Labels, Favorites
+- **📅 Upcoming** — Week strip + expandable month grid with task-count dots
+- **🎛️ Filters & Labels** — Built-in smart filters, your saved custom filters, and all labels
+- **🧭 Eisenhower Matrix** — Do First / Schedule / Delegate / Eliminate, set per-task from its Details pills
+- **🕸️ Web of Thoughts** — Projects/labels as connection clusters; jump between related dumps via 🔗 chips
+- **🌟 Goals** — Tasks tagged with a Goal Timeline
+- **✅ Done** — Completed (undo available) and Archived (restore available)
 - **⚙️ Settings** — Google sync, Projects, Labels, JSON Backup/Restore
 
-**Quick Add (➕ button)** — type naturally:
-- `today`, `tomorrow`, `next week`, `next month`, weekday names (`mon`, `tue`…), or `in 3 days`
-- `p1`–`p4` or `!`/`!!`/`!!!` for priority
-- `@ProjectName` to assign a project
-- `#label` to tag — start typing `#` and matching existing labels pop up to tap-complete
+**Quick Add** — type naturally, or tap the Date/Priority/Labels pills:
+- `today`, `tomorrow`, `next week`, a weekday name, or `in 3 days`
+- `p1`–`p4` for priority
+- `@ProjectName` / `/SectionName` to file it
+- `#label` — matching existing labels pop up to tap-complete
 
-**Bulk select** (Inbox & Scheduled) — tap **Select**, then tap tasks to multi-select:
-- 📋 Copy — copies selected task text to clipboard
-- 🏷️ Label — apply one or more labels to all selected at once
-- 📦 — archive all selected
-- 🗑️ — delete all selected (also removes their Calendar events)
+**Organizing tasks into sub-tasks:**
+- Long-press a task to select it, then **⇥ Indent** (attaches under whichever task is above it) or **⇤ Outdent** (promotes one level up) from the action bar — the reliable option.
+- Or drag the selected task onto another task's row; a floating preview shows what will happen before you drop.
 
-**Web of Thoughts** — every project and every label that's currently in use on an active task becomes a tappable cluster card showing how many tasks are in it and how many are "cross-linked" (tagged with more than one label, or a label + a project). Tap into a cluster to see the actual thoughts, and tap any 🔗 chip on a thought to jump straight to another cluster it shares a tag with — useful for following a chain of related ideas (e.g. all dumps tagged `#steel` across both the `C3` and `DS-yard` projects) without manually searching.
-
-**Priorities:** P1 (critical) → P2 (high) → P3 (medium) → P4 (low). Overdue tasks without a manual priority auto-escalate (shown with ⬆) the longer they sit.
+**Priorities:** P1 (critical) → P2 (high) → P3 (medium) → P4 (low). Overdue tasks without a manual priority auto-escalate (⬆) the longer they sit.
 
 **Recurring tasks:** Daily / Weekly / Monthly / Yearly — completing one auto-creates the next occurrence.
 
-**Sub-tasks:** add inside a task's edit screen; tap to check off directly from the task list too.
+**`*Heading` trick:** start a task's text with `*` (e.g. `*Materials`) to turn it into a bold, non-completable title row — useful for labeling a group of tasks without it being an action item itself.
 
 ---
 
 ## Known gaps (not yet solved in this build)
 
-These were flagged when comparing the two source versions and are still open — worth knowing about before you rely on this for site-critical data:
+Worth knowing about before relying on this for site-critical data:
 
-1. **No conflict-resolution UI.** If you edit on two devices offline at the same time, the sync logic picks a "winner" automatically (by timestamp + task count) — there's no prompt to let you choose, so the loser's edits are silently dropped.
-2. **No live/real-time sync.** Sync only happens on app load / reconnect, not continuously — two devices open at once won't see each other's changes until one reloads.
-3. **No pending-sync indicator.** If a Drive/Calendar call fails silently (e.g., spotty site network), there's no on-screen "not yet synced" badge.
-4. **Recurring monthly tasks** from month-end dates (e.g., the 31st) may shift unexpectedly in shorter months — standard JS date-rollover behavior, not explicitly handled.
-5. **Subprojects (nested projects) and live `@project` autocomplete in Quick Add** were designed but not finished — not present in this build.
-6. **No vision board** — was mentioned once but never fully specified; not built.
-
-A reasonable next step if these matter to you: add a manual "Drive has newer data — keep local or use Drive?" prompt when both sides changed since last sync, and a small sync-status dot in the header.
+1. **No field-by-field conflict merge.** If you edit the *exact same task* on two devices before either one syncs, whichever edit has the later timestamp wins for that task as a whole — there's no prompt to merge individual field changes.
+2. **Kanban board doesn't show sub-task nesting.** Cards are flat per column; drag-indenting is a list-view feature only.
+3. **A sub-task with its own due date may not always render nested under its parent** in Today/Upcoming if the parent doesn't independently match that same view's filter — it'll still show up, just not indented in place.
+4. **Section reordering uses ▲▼ buttons, not a drag handle** — an intentional simplification alongside the card drag-and-drop, to avoid stacking two independent drag systems in one view.
+5. **Recurring monthly tasks** from month-end dates (e.g. the 31st) may shift unexpectedly in shorter months — standard JS date-rollover behavior, not explicitly handled.
+6. **No push notifications/reminders.** The Reminders concept from Todoist isn't built — there's no background mechanism to fire a notification at a given time yet.
+7. **No vision board.** Mentioned early on, never fully specified, not built.
+8. **Occasional Google re-prompts are still possible.** This app has no backend, so it can't hold a true long-lived refresh token — the background token refresh substantially reduces how often you'll see a reconnect prompt, but can't guarantee zero, especially if your browser restricts third-party cookies to accounts.google.com.
 
 ---
 
 ## Files in this package
 
 ```
-index.html    — The full app (merged v6 build, Web of Thoughts restored)
+index.html    — The full app (single-file React build)
 manifest.json — Makes it installable as an Android PWA
-sw.js         — Service worker (offline caching, cache version gtd-v6)
+sw.js         — Service worker (offline caching, cache version gtd-v7)
 icon.svg      — App icon
 README.md     — This file
 ```
-
