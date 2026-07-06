@@ -530,6 +530,24 @@ function App(){
   })();
 
   const nav=(tab,extra={})=>{setView({tab,...extra});exitSelect()};
+  // Reliable indent/outdent — no drag precision needed. Indent attaches the selected task under
+  // whichever task sits immediately above it in the current list; outdent promotes it one level up.
+  const indentSel=()=>{
+    const id=selected[0];const idx=selPool.indexOf(id);
+    if(idx<=0){showToast('Nothing above to indent under');return}
+    const aboveId=selPool[idx-1];
+    if(isDescendantOf(id,aboveId,tasks)){showToast("↩️ Can't nest a task under its own subtask");return}
+    const above=tasks.find(t=>t.id===aboveId);
+    pushUndo('↳ Indented under "'+(above?.text||'').slice(0,24)+'"',tasks);
+    persist(tasks.map(t=>t.id===id?{...t,parentId:aboveId,sectionId:above?above.sectionId||null:t.sectionId,project:above?above.project||null:t.project}:t));
+  };
+  const outdentSel=()=>{
+    const id=selected[0];const task=tasks.find(t=>t.id===id);
+    if(!task||!task.parentId){showToast('Already at top level');return}
+    const parent=tasks.find(t=>t.id===task.parentId);
+    pushUndo('⬅ Outdented "'+task.text.slice(0,24)+'"',tasks);
+    persist(tasks.map(t=>t.id===id?{...t,parentId:parent?parent.parentId||null:null}:t));
+  };
 
   return(
     <div style={{position:'fixed',top:0,left:0,right:0,height:'100dvh',display:'flex',background:'#F7F7F5'}} className="flex-col md:flex-row">
@@ -642,6 +660,8 @@ function App(){
             <React.Fragment>
               <button onClick={()=>moveTask(selected[0],-1,selPool)} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0">⬆️</button>
               <button onClick={()=>moveTask(selected[0],1,selPool)} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0">⬇️</button>
+              <button onClick={outdentSel} className="text-xs bg-violet-50 text-violet-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0">⇤ Outdent</button>
+              <button onClick={indentSel} className="text-xs bg-violet-50 text-violet-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0">⇥ Indent</button>
             </React.Fragment>
           )}
           <button onClick={()=>setSelected([...selPool])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">All</button>
@@ -682,15 +702,17 @@ function App(){
 function useRowDrag(onReparent){
   const [dragId,setDragId]=useState(null);
   const [hoverId,setHoverId]=useState(null);
+  const [pos,setPos]=useState({x:0,y:0});
   const info=useRef({active:false,taskId:null,startX:0,startY:0,moved:false});
-  const onRowDown=(e,taskId)=>{const pt=e.touches?e.touches[0]:e;info.current={active:true,taskId,startX:pt.clientX,startY:pt.clientY,moved:false}};
+  const onRowDown=(e,taskId)=>{const pt=e.touches?e.touches[0]:e;info.current={active:true,taskId,startX:pt.clientX,startY:pt.clientY,moved:false};setPos({x:pt.clientX,y:pt.clientY})};
   const onRowMove=e=>{
     if(!info.current.active)return;
     const pt=e.touches?e.touches[0]:e;
     const dx=pt.clientX-info.current.startX,dy=pt.clientY-info.current.startY;
-    if(!info.current.moved&&Math.hypot(dx,dy)>18){info.current.moved=true;setDragId(info.current.taskId)}
+    if(!info.current.moved&&Math.hypot(dx,dy)>12){info.current.moved=true;setDragId(info.current.taskId)}
     if(info.current.moved){
       e.preventDefault&&e.preventDefault();
+      setPos({x:pt.clientX,y:pt.clientY});
       const el=document.elementFromPoint(pt.clientX,pt.clientY);
       const rowEl=el&&el.closest&&el.closest('[data-taskrow]');
       const hid=rowEl?rowEl.getAttribute('data-taskrow'):null;
@@ -704,7 +726,29 @@ function useRowDrag(onReparent){
     setDragId(null);setHoverId(null);
     return wasDrag;
   };
-  return{dragId,hoverId,onRowDown,onRowMove,onRowUp};
+  return{dragId,hoverId,pos,onRowDown,onRowMove,onRowUp};
+}
+// Floating preview that follows the finger while dragging, showing exactly what will happen on drop —
+// same idea as Todoist's drop-line guide, adapted to our "drop onto a row to nest under it" model.
+function DragGhost({dragId,hoverId,pos,pool}){
+  if(!dragId)return null;
+  const task=pool.find(t=>t.id===dragId);
+  const target=hoverId?pool.find(t=>t.id===hoverId):null;
+  if(!task)return null;
+  return(
+    <div className="fixed z-[70] pointer-events-none" style={{left:Math.min(pos.x+18,window.innerWidth-240),top:pos.y-12}}>
+      <div className="bg-white rounded-xl px-3 py-2 shadow-2xl border-2 border-emerald-400" style={{maxWidth:220}}>
+        <p className="text-xs font-semibold text-stone-800 truncate">{task.text}</p>
+        {target?(
+          <p className="text-[10px] text-violet-600 font-bold mt-1 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-violet-500"/>↳ becomes sub-task of "{target.text.slice(0,22)}"
+          </p>
+        ):(
+          <p className="text-[10px] text-stone-400 mt-1">Drop onto a task to nest under it</p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /* ── Task Row ────────────────────────────────────────── */
@@ -810,6 +854,7 @@ function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit
         </div>
       )}
       {selectMode&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
+      <DragGhost {...drag} pool={allTasks}/>
     </div>
   );
 }
@@ -831,6 +876,7 @@ function InboxView({tasks,allTasks,onReparent,onComplete,onEdit,labels,projects,
       {!tasks.length&&<div className="text-center py-12"><div style={{fontSize:48}}>📭</div><p className="text-base font-bold text-stone-600 mt-3">Inbox zero!</p><p className="text-sm text-stone-400 mt-1">Tap + to add tasks</p></div>}
       {renderNested(sorted,allTasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,showCreated:true,...drag})}
       {selectMode&&tasks.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
+      <DragGhost {...drag} pool={allTasks}/>
     </div>
   );
 }
@@ -1363,6 +1409,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
           })}
         </React.Fragment>
       )}
+      {viewMode==='list'&&<DragGhost {...rowDrag} pool={allTasks||tasks}/>}
 
       {/* Kanban view: sections as columns — drag a card to move it, or tap to open */}
       {viewMode==='kanban'&&active.length>0&&(
@@ -1436,6 +1483,7 @@ function LabelView({lbl,tasks,allTasks,onReparent,onComplete,onEdit,onBack,label
       {!active.length&&<div className="text-center py-12"><div style={{fontSize:40}}>🏷️</div><p className="text-sm font-bold text-stone-500 mt-2">No tasks with #{lbl}</p></div>}
       {renderNested(active,allTasks||tasks,{onComplete,onEdit,projects,showProject:true,showCreated:true,selectMode,selected,onSelect,onLongPress,...drag})}
       {selectMode&&active.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
+      <DragGhost {...drag} pool={allTasks||tasks}/>
     </div>
   );
 }
