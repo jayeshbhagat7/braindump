@@ -465,6 +465,11 @@ function App(){
   const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections:sec,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
   const quickMoveSection=(taskId,sectionId)=>{pushUndo('📂 Moved task',tasks);persist(tasks.map(t=>t.id===taskId?{...t,sectionId}:t))};
   const toggleWeeklyFocus=taskId=>persist(tasks.map(t=>t.id===taskId?{...t,weeklyFocus:!t.weeklyFocus}:t));
+  const bulkAssignEisenhower=(ids,quad)=>{
+    if(!ids||!ids.length)return;
+    pushUndo('🧭 Assigned '+ids.length+' task'+(ids.length!==1?'s':'')+' to "'+EISEN_OPT[quad]+'"',tasks);
+    persist(tasks.map(t=>ids.includes(t.id)?{...t,eisenhower:quad}:t));
+  };
   // Drag a task onto another task's row to indent it as a subtask; drop it back onto its own parent's
   // row to outdent it one level (Workflowy/Todoist-style). Guards against nesting a task under its own descendant.
   const reparentTask=(draggedId,targetId)=>{
@@ -626,7 +631,7 @@ function App(){
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
-        {view.tab==='eisenhower' &&<EisenhowerView tasks={active} onEdit={setEditTask} onComplete={complete} projects={projects}/>}
+        {view.tab==='eisenhower' &&<EisenhowerView tasks={active} onEdit={setEditTask} onComplete={complete} projects={projects} onBulkAssign={bulkAssignEisenhower}/>}
         {view.tab==='mission' &&<MissionView mission={mission} history={missionHistory} onSave={saveMission}/>}
         {view.tab==='circle' &&<CircleView items={circleItems} onSave={persistCircle} onPromote={(text,id)=>{persistCircle(circleItems.filter(i=>i.id!==id));setQuickAddPrefill(text);setShowQuickAdd(true)}}/>}
         {view.tab==='review' &&<WeeklyReviewView inboxCount={inbox.length} overdueCount={overdueTasks.length} overdueTasks={overdueTasks} goalTasks={goals} circleItems={circleItems} weekPool={[...todayTasks,...upcomingTasks]} onToggleFocus={toggleWeeklyFocus} onNav={nav} onFinish={finishWeeklyReview} lastWeeklyReview={lastWeeklyReview} reviewHistory={reviewHistory}/>}
@@ -1982,7 +1987,7 @@ function WeeklyReviewView({inboxCount,overdueCount,overdueTasks,goalTasks,circle
   );
 }
 
-function EisenhowerView({tasks,onEdit,onComplete,projects}){
+function EisenhowerView({tasks,onEdit,onComplete,projects,onBulkAssign}){
   const QUADS=[
     {k:'do',l:'Do First',sub:'Urgent + Important',color:'#ef4444',bg:'bg-red-50'},
     {k:'schedule',l:'Schedule',sub:'Important, not urgent',color:'#3b82f6',bg:'bg-blue-50'},
@@ -1990,6 +1995,9 @@ function EisenhowerView({tasks,onEdit,onComplete,projects}){
     {k:'eliminate',l:'Eliminate',sub:'Neither',color:'#9ca3af',bg:'bg-stone-50'},
   ];
   const unsorted=tasks.filter(t=>!t.eisenhower);
+  const [sel,setSel]=useState([]);
+  const toggleSel=id=>setSel(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
+  const assign=quad=>{onBulkAssign&&onBulkAssign(sel,quad);setSel([])};
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4">
@@ -2023,12 +2031,27 @@ function EisenhowerView({tasks,onEdit,onComplete,projects}){
       </div>
       {unsorted.length>0&&(
         <div className="mt-4 px-4">
-          <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">Not yet sorted ({unsorted.length})</p>
-          {unsorted.slice(0,30).map(t=>(
-            <div key={t.id} onClick={()=>onEdit(t)} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm border border-stone-100">
-              <p className={t.text.trim().startsWith('*')?'text-xs font-black text-stone-500 uppercase tracking-wide':'text-xs font-semibold text-stone-700'}>{t.text.trim().startsWith('*')?t.text.trim().slice(1).trim():t.text}</p>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-black text-stone-400 uppercase tracking-widest">Not yet sorted ({unsorted.length})</p>
+            {sel.length>0&&<button onClick={()=>setSel([])} className="text-[10px] text-stone-400 font-bold">Clear ({sel.length})</button>}
+          </div>
+          {sel.length>0&&(
+            <div className="flex gap-1.5 mb-3 flex-wrap">
+              {QUADS.map(q=><button key={q.k} onClick={()=>assign(q.k)} className="flex-1 py-2 rounded-xl text-[11px] font-bold text-white" style={{background:q.color,minWidth:'45%'}}>{q.l}</button>)}
             </div>
-          ))}
+          )}
+          {unsorted.slice(0,30).map(t=>{
+            const isSel=sel.includes(t.id);
+            const isHead=t.text.trim().startsWith('*');
+            return(
+              <div key={t.id} className={'flex items-center gap-2 rounded-xl p-2.5 mb-1.5 shadow-sm border '+(isSel?'bg-indigo-50 border-indigo-200':'bg-white border-stone-100')}>
+                <button onClick={()=>toggleSel(t.id)} className={'w-4.5 h-4.5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSel?'bg-indigo-500 border-indigo-500':'border-stone-300')} style={{width:18,height:18}}>
+                  {isSel&&<svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.2 6L8 1" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </button>
+                <p onClick={()=>onEdit(t)} className={isHead?'flex-1 text-xs font-black text-stone-500 uppercase tracking-wide':'flex-1 text-xs font-semibold text-stone-700'}>{isHead?t.text.trim().slice(1).trim():t.text}</p>
+              </div>
+            );
+          })}
           {unsorted.length>30&&<p className="text-[10px] text-stone-300 text-center mt-1">+{unsorted.length-30} more — use Filters/Labels or a project to narrow this down</p>}
         </div>
       )}
