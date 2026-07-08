@@ -208,9 +208,15 @@ const collectWithDescendants=(ids,pool)=>{
 };
 // Given a view's own filtered top-level list, walk in each task's children (pulled from the fuller `pool`)
 // so a task and its subtasks always render together, indented, regardless of the view's own filter.
-const buildNested=(topLevelFiltered,pool,sharedSeen)=>{
+const buildNested=(topLevelFiltered,pool,sharedSeen,expandedIds)=>{
   const rows=[];const seen=sharedSeen||new Set();
-  const walk=(t,depth,orphanParent)=>{if(seen.has(t.id))return;seen.add(t.id);rows.push({task:t,depth,orphanParent:orphanParent||null});childrenOf(t.id,pool).forEach(c=>walk(c,depth+1,null))};
+  const walk=(t,depth,orphanParent)=>{
+    if(seen.has(t.id))return;seen.add(t.id);
+    const kids=childrenOf(t.id,pool);
+    rows.push({task:t,depth,orphanParent:orphanParent||null,childCount:kids.length});
+    // Only descend into children if this task is explicitly expanded — keeps the default view minimal
+    if(kids.length&&expandedIds&&expandedIds.has(t.id))kids.forEach(c=>walk(c,depth+1,null));
+  };
   topLevelFiltered.filter(t=>!t.parentId).forEach(t=>walk(t,0,null));
   // A subtask whose parent doesn't happen to match this view's own filter (e.g. parent moved to a
   // different project, or has a different due date) would otherwise vanish entirely, or show with no
@@ -222,11 +228,13 @@ const buildNested=(topLevelFiltered,pool,sharedSeen)=>{
   return rows;
 };
 // Shared row renderer for the four list-style views that support nesting/drag-to-indent.
-// In compact ("overview") mode, sub-tasks are collapsed entirely and rows show minimal detail.
+// Sub-tasks are collapsed by default; each parent row gets its own ▸/▾ arrow to expand just that
+// branch — no page-wide mode, no need to open the edit form just to peek at what's underneath.
 const renderNested=(list,pool,p)=>{
-  const rows=p.compact?list.filter(t=>!t.parentId).map(t=>({task:t,depth:0,orphanParent:null})):buildNested(list,pool,p.sharedSeen);
-  return rows.map(({task,depth,orphanParent})=>(
-    <TaskRow key={task.id} task={task} depth={depth} childCount={childrenOf(task.id,pool).length} compact={p.compact} orphanParentText={orphanParent?orphanParent.text:null}
+  const rows=buildNested(list,pool,p.sharedSeen,p.expandedIds||new Set());
+  return rows.map(({task,depth,orphanParent,childCount})=>(
+    <TaskRow key={task.id} task={task} depth={depth} childCount={childCount} orphanParentText={orphanParent?orphanParent.text:null}
+      isExpanded={p.expandedIds&&p.expandedIds.has(task.id)} onToggleExpand={p.onToggleExpand}
       onComplete={p.onComplete} onEdit={p.onEdit} projects={p.projects} showProject={p.showProject} showCreated={p.showCreated}
       selectMode={p.selectMode} isSelected={p.selected&&p.selected.includes(task.id)} onSelect={p.onSelect} onLongPress={p.onLongPress}
       dragId={p.dragId} hoverId={p.hoverId} onRowDown={p.onRowDown} onRowMove={p.onRowMove} onRowUp={p.onRowUp}/>
@@ -258,10 +266,10 @@ function SortBtn({sortKey,asc,onChange}){
   );
 }
 
-function CompactToggle({compact,onToggle}){
+function ExpandAllToggle({anyExpanded,onExpandAll,onCollapseAll}){
   return(
-    <button onClick={onToggle} title={compact?'Switch to detailed view':'Switch to overview'} className="text-[11px] font-bold text-stone-400 px-2 py-1 flex items-center gap-1 bg-stone-100 rounded-lg flex-shrink-0">
-      {compact?'⊞ Detail':'⊟ Overview'}
+    <button onClick={anyExpanded?onCollapseAll:onExpandAll} title={anyExpanded?'Collapse all sub-tasks':'Expand all sub-tasks'} className="text-[11px] font-bold text-stone-400 px-2 py-1 flex items-center gap-1 bg-stone-100 rounded-lg flex-shrink-0">
+      {anyExpanded?'⊟ Collapse all':'⊞ Expand all'}
     </button>
   );
 }
@@ -311,8 +319,6 @@ function App(){
   const [ready,setReady]=useState(false);
   const [favorites,setFavorites]=useState(()=>ls.get('favorites',[])); // array of {type:'project'|'label',id,name}
   // Overview/Detail toggle — app-wide. Overview collapses sub-tasks and shows minimal per-row info.
-  const [compactMode,setCompactMode]=useState(()=>ls.get('compactMode',false));
-  const toggleCompact=()=>{setCompactMode(c=>{ls.set('compactMode',!c);return!c})};
   const saveFavs=f=>{setFavorites(f);ls.set('favorites',f)};
   const toggleFav=(type,id,name)=>{const exists=favorites.find(f=>f.type===type&&f.id===id);saveFavs(exists?favorites.filter(f=>!(f.type===type&&f.id===id)):[...favorites,{type,id,name}])};
   // Mission — a rarely-edited personal constitution, kept separate from tasks
@@ -650,14 +656,14 @@ function App(){
       {/* Main content */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" onTouchStart={onTouchStartMain} onTouchMove={onTouchMoveMain} onTouchEnd={onTouchEndMain}>
         <div className="md:max-w-3xl md:mx-auto">
-        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} lastWeeklyReview={lastWeeklyReview} onOpenReview={()=>nav('review')} compactMode={compactMode} onToggleCompact={toggleCompact}/>}
-        {view.tab==='inbox'   &&<InboxView tasks={inbox} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} compactMode={compactMode} onToggleCompact={toggleCompact}/>}
+        {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} lastWeeklyReview={lastWeeklyReview} onOpenReview={()=>nav('review')}/>}
+        {view.tab==='inbox'   &&<InboxView tasks={inbox} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
         {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects} customFilters={customFilters} onSaveFilters={persistFilters}/>}
         {view.tab==='customFilter' &&<CustomFilterView filter={view.filter} tasks={active} projects={projects} onBack={()=>nav('filters')} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} onDelFilter={id=>{persistFilters(customFilters.filter(f=>f.id!==id));nav('filters')}}/>}
         {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
-        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection} onOpenQuickAdd={openQuickAddForSection} compactMode={compactMode} onToggleCompact={toggleCompact}/>}
-        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} compactMode={compactMode} onToggleCompact={toggleCompact}/>}
+        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection} onOpenQuickAdd={openQuickAddForSection}/>}
+        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
@@ -787,6 +793,20 @@ function App(){
 }
 
 /* ── Drag-to-indent/outdent hook, shared by list views ── */
+/* ── Per-task expand/collapse state, shared by list views ── */
+function useExpandState(){
+  const [expandedIds,setExpandedIds]=useState(()=>new Set());
+  const toggleExpand=id=>setExpandedIds(s=>{const n=new Set(s);n.has(id)?n.delete(id):n.add(id);return n});
+  const expandAll=(list,pool)=>{
+    const ids=new Set();
+    const addAll=t=>{const kids=childrenOf(t.id,pool);if(kids.length){ids.add(t.id);kids.forEach(addAll)}};
+    list.forEach(addAll);
+    setExpandedIds(ids);
+  };
+  const collapseAll=()=>setExpandedIds(new Set());
+  return{expandedIds,toggleExpand,expandAll,collapseAll};
+}
+
 function useRowDrag(onReparent){
   const [dragId,setDragId]=useState(null);
   const [hoverId,setHoverId]=useState(null);
@@ -840,7 +860,7 @@ function DragGhost({dragId,hoverId,pos,pool}){
 }
 
 /* ── Task Row ────────────────────────────────────────── */
-function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress,depth=0,childCount=0,dragId,hoverId,onRowDown,onRowMove,onRowUp,compact=false,orphanParentText=null}){
+function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress,depth=0,childCount=0,dragId,hoverId,onRowDown,onRowMove,onRowUp,isExpanded=false,onToggleExpand,orphanParentText=null}){
   const done=task.status==='completed';
   const isHeading=task.text.trim().startsWith('*');
   const displayText=isHeading?task.text.trim().slice(1).trim():task.text;
@@ -868,7 +888,7 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
 
   return(
     <div data-taskrow={task.id} className={'bg-white select-none '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')+(isBeingDragged?' opacity-30':'')+(isDropTarget?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={{WebkitTouchCallout:'none',WebkitUserSelect:'none',userSelect:'none',touchAction:(selectMode&&isSelected)?'none':'auto',...(depth?{marginLeft:depth*18}:{})}}>
-      <div className={'flex gap-3 px-4 '+(compact?'py-2':'py-3')} onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={endTouch} onTouchMove={moveTouch} onMouseDown={startLP} onMouseMove={moveTouch} onMouseUp={endTouch} onMouseLeave={cancelLP}>
+      <div className="flex gap-3 px-4 py-3" onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={endTouch} onTouchMove={moveTouch} onMouseDown={startLP} onMouseMove={moveTouch} onMouseUp={endTouch} onMouseLeave={cancelLP}>
         {depth>0&&<span className="text-stone-300 flex-shrink-0 select-none" style={{marginTop:2}}>↳</span>}
         {/* Priority circle / select checkbox */}
         {selectMode?(
@@ -885,9 +905,15 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
         </button>
         )}
         <div className="flex-1 min-w-0">
-          <p className={isHeading?'text-sm font-black text-stone-500 uppercase tracking-wide leading-snug':'text-sm leading-snug text-stone-800 '+(compact?'truncate ':'')+(done?'line-through text-stone-400':'')}>{displayText}</p>
+          <div className="flex items-center gap-1.5">
+            {childCount>0&&(
+              <button onClick={ev=>{ev.stopPropagation();onToggleExpand&&onToggleExpand(task.id)}} className="w-5 h-5 -ml-1 flex-shrink-0 flex items-center justify-center text-stone-400 active:text-stone-600">
+                <span style={{fontSize:11}}>{isExpanded?'▾':'▸'}</span>
+              </button>
+            )}
+            <p className={isHeading?'text-sm font-black text-stone-500 uppercase tracking-wide leading-snug':'text-sm leading-snug text-stone-800 '+(done?'line-through text-stone-400':'')}>{displayText}</p>
+          </div>
           {orphanParentText&&<p className="text-[10px] text-violet-400 font-semibold mt-0.5 truncate">↳ Sub-task of "{orphanParentText.slice(0,40)}"</p>}
-          {!compact&&(
           <div className="flex flex-wrap items-center gap-2 mt-1">
             {task.dueDate&&(
               <span className={'text-[11px] font-semibold '+(isOverdue(task.dueDate)&&!done?'text-red-500':task.dueDate===todayISO()?'text-emerald-600':'text-stone-400')}>
@@ -900,16 +926,9 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
             {(task.labels||[]).slice(0,2).map(l=><span key={l} className="text-[10px] text-stone-400">#{l}</span>)}
             {task.recurring&&<span className="text-[10px] text-teal-500">🔄</span>}
             {task.goalType&&<span className="text-[10px] text-purple-500">⭐</span>}
-            {childCount>0&&<span className="text-[10px] text-stone-400">↳ {childCount} sub-task{childCount!==1?'s':''}</span>}
+            {childCount>0&&<button onClick={ev=>{ev.stopPropagation();onToggleExpand&&onToggleExpand(task.id)}} className="text-[10px] text-stone-400 font-semibold">↳ {childCount} sub-task{childCount!==1?'s':''}{isExpanded?' (hide)':' (show)'}</button>}
             {showCreated&&task.createdAt&&<span className="text-[10px] text-stone-300">🕐 {fmtCreatedShort(task.createdAt)}</span>}
           </div>
-          )}
-          {compact&&task.dueDate&&(
-            <span className={'text-[10px] font-semibold '+(isOverdue(task.dueDate)&&!done?'text-red-500':task.dueDate===todayISO()?'text-emerald-600':'text-stone-400')}>
-              📅 {fmtDate(task.dueDate)}{childCount>0?' · ↳'+childCount:''}
-            </span>
-          )}
-          {compact&&!task.dueDate&&childCount>0&&<span className="text-[10px] text-stone-300">↳ {childCount} sub-task{childCount!==1?'s':''}</span>}
         </div>
       </div>
       <div className="ml-16 h-px bg-stone-100"/>
@@ -918,12 +937,14 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
 }
 
 /* ── Today View ─────────────────────────────────────── */
-function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,lastWeeklyReview,onOpenReview,compactMode,onToggleCompact}){
+function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,lastWeeklyReview,onOpenReview}){
   const [showUpcoming,setShowUpcoming]=useState(true);
   const dayNames=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   const now=new Date();
   const drag=useRowDrag(onReparent);
-  const rp={onComplete,onEdit,projects,showProject:true,selectMode,selected,onSelect,onLongPress,compact:compactMode,...drag};
+  const exp=useExpandState();
+  const allShown=[...overdue,...today,...upcoming];
+  const rp={onComplete,onEdit,projects,showProject:true,selectMode,selected,onSelect,onLongPress,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,...drag};
   const reviewDue=!lastWeeklyReview||(Date.now()-new Date(lastWeeklyReview).getTime())>7*864e5;
   const focusTasks=(allTasks||[]).filter(t=>t.weeklyFocus&&t.status!=='completed'&&t.status!=='archived');
   return(
@@ -932,7 +953,7 @@ function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit
         <div>
           <p className="text-xs font-semibold text-stone-400 uppercase tracking-widest">{dayNames[now.getDay()]}</p><h2 className="text-3xl font-black text-stone-900">Today</h2><p className="text-sm text-stone-400 mt-0.5">{now.toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</p>
         </div>
-        <CompactToggle compact={compactMode} onToggle={onToggleCompact}/>
+        <ExpandAllToggle anyExpanded={exp.expandedIds.size>0} onExpandAll={()=>exp.expandAll(allShown,allTasks)} onCollapseAll={exp.collapseAll}/>
       </div>
       {reviewDue&&(
         <button onClick={onOpenReview} className="mx-4 mb-3 w-[calc(100%-2rem)] flex items-center gap-2 bg-indigo-50 border border-indigo-100 rounded-xl px-3 py-2.5 text-left">
@@ -973,11 +994,12 @@ function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit
 }
 
 /* ── Inbox View ─────────────────────────────────────── */
-function InboxView({tasks,allTasks,onReparent,onComplete,onEdit,labels,projects,selectMode,selected,onSelect,onLongPress,compactMode,onToggleCompact}){
+function InboxView({tasks,allTasks,onReparent,onComplete,onEdit,labels,projects,selectMode,selected,onSelect,onLongPress}){
   const [sortKey,setSortKey]=useState('manual');
   const [asc,setAsc]=useState(true);
   const sorted=applySort(tasks,sortKey,asc);
   const drag=useRowDrag(onReparent);
+  const exp=useExpandState();
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4 flex items-start justify-between gap-2">
@@ -985,12 +1007,12 @@ function InboxView({tasks,allTasks,onReparent,onComplete,onEdit,labels,projects,
           <h2 className="text-3xl font-black text-stone-900">Inbox</h2><p className="text-sm text-stone-400 mt-0.5">Braindump anything. Shift it to a project within 7 days, or it auto-archives.</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
-          <CompactToggle compact={compactMode} onToggle={onToggleCompact}/>
+          <ExpandAllToggle anyExpanded={exp.expandedIds.size>0} onExpandAll={()=>exp.expandAll(sorted,allTasks)} onCollapseAll={exp.collapseAll}/>
           {tasks.length>1&&<SortBtn sortKey={sortKey} asc={asc} onChange={(k,a)=>{setSortKey(k);setAsc(a)}}/>}
         </div>
       </div>
       {!tasks.length&&<div className="text-center py-12"><div style={{fontSize:48}}>📭</div><p className="text-base font-bold text-stone-600 mt-3">Inbox zero!</p><p className="text-sm text-stone-400 mt-1">Tap + to add tasks</p></div>}
-      {renderNested(sorted,allTasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,showCreated:true,compact:compactMode,...drag})}
+      {renderNested(sorted,allTasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,showCreated:true,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,...drag})}
       {selectMode&&tasks.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
       <DragGhost {...drag} pool={allTasks}/>
     </div>
@@ -1361,11 +1383,12 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
 }
 
 /* ── Project View ────────────────────────────────────── */
-function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections,onAddTask,onQuickMoveSection,onOpenQuickAdd,compactMode,onToggleCompact}){
+function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections,onAddTask,onQuickMoveSection,onOpenQuickAdd}){
   if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
   const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const rowDrag=useRowDrag(onReparent);
+  const exp=useExpandState();
   const nestSeen=new Set(); // shared across every section's renderNested call this render — belt-and-suspenders against the same task rendering twice across sections
   const [showDone,setShowDone]=useState(false);
   const [viewMode,setViewModeRaw]=useState(()=>ls.get('viewMode_'+prj.id,'list')); // 'list' | 'kanban' — remembered per project, survives reload
@@ -1475,7 +1498,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
       <div className="px-4 flex items-center justify-between mb-3">
         <p className="text-xs text-stone-400">{active.length} task{active.length!==1?'s':''}</p>
         <div className="flex items-center gap-2">
-          <CompactToggle compact={compactMode} onToggle={onToggleCompact}/>
+          <ExpandAllToggle anyExpanded={exp.expandedIds.size>0} onExpandAll={()=>exp.expandAll(active,allTasks||tasks)} onCollapseAll={exp.collapseAll}/>
           {active.length>1&&<SortBtn sortKey={sortKey} asc={asc} onChange={(k,a)=>{setSortKey(k);setAsc(a)}}/>}
           {!addingSection&&<button onClick={()=>setAddingSection(true)} className="text-[11px] font-bold text-indigo-500">+ Section</button>}
         </div>
@@ -1493,7 +1516,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
       {viewMode==='list'&&active.length>0&&(
         <React.Fragment>
           {noSection.length>0&&prjSections.length>0&&<div className="px-4 py-1.5"><span className="text-[10px] font-black text-stone-400 uppercase tracking-widest">No Section</span></div>}
-          {renderNested(noSection,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,compact:compactMode,sharedSeen:nestSeen,...rowDrag})}
+          {renderNested(noSection,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,sharedSeen:nestSeen,...rowDrag})}
           <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(null)} className="w-full text-left px-4 py-2 text-xs font-bold text-stone-400">+ Add task</button>
           {prjSections.map((sec,si)=>{
             const secTasks=inSection(sec.id);
@@ -1519,7 +1542,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
                   </div>
                 )}
                 {secTasks.length===0&&<p className="px-4 py-2 text-[11px] text-stone-300">No tasks yet</p>}
-                {renderNested(secTasks,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,compact:compactMode,sharedSeen:nestSeen,...rowDrag})}
+                {renderNested(secTasks,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,sharedSeen:nestSeen,...rowDrag})}
                 <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-4 py-2 text-xs font-bold text-stone-400">+ Add task</button>
               </div>
             );
@@ -1588,22 +1611,23 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
 }
 
 /* ── Label View ──────────────────────────────────────── */
-function LabelView({lbl,tasks,allTasks,onReparent,onComplete,onEdit,onBack,labels,projects,selectMode,selected,onSelect,onLongPress,compactMode,onToggleCompact}){
+function LabelView({lbl,tasks,allTasks,onReparent,onComplete,onEdit,onBack,labels,projects,selectMode,selected,onSelect,onLongPress}){
   const [sortKey,setSortKey]=useState('date');
   const [asc,setAsc]=useState(true);
   const active=applySort(tasks.filter(t=>t.status!=='completed'&&t.status!=='archived'),sortKey,asc);
   const drag=useRowDrag(onReparent);
+  const exp=useExpandState();
   return(
     <div className="pb-24">
       <div className="flex items-center gap-3 px-4 pt-4 pb-4">
         <button onClick={onBack} className="text-stone-400 text-xl font-bold mr-1">‹</button>
         <span className="text-xl">🏷️</span>
         <h2 className="text-xl font-black text-stone-900 flex-1"># {lbl}</h2>
-        <CompactToggle compact={compactMode} onToggle={onToggleCompact}/>
+        <ExpandAllToggle anyExpanded={exp.expandedIds.size>0} onExpandAll={()=>exp.expandAll(active,allTasks||tasks)} onCollapseAll={exp.collapseAll}/>
         {active.length>1&&<SortBtn sortKey={sortKey} asc={asc} onChange={(k,a)=>{setSortKey(k);setAsc(a)}}/>}
       </div>
       {!active.length&&<div className="text-center py-12"><div style={{fontSize:40}}>🏷️</div><p className="text-sm font-bold text-stone-500 mt-2">No tasks with #{lbl}</p></div>}
-      {renderNested(active,allTasks||tasks,{onComplete,onEdit,projects,showProject:true,showCreated:true,selectMode,selected,onSelect,onLongPress,compact:compactMode,...drag})}
+      {renderNested(active,allTasks||tasks,{onComplete,onEdit,projects,showProject:true,showCreated:true,selectMode,selected,onSelect,onLongPress,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,...drag})}
       {selectMode&&active.length>0&&<p className="text-center text-[10px] text-stone-300 mt-2">Long-press any task to select more</p>}
       <DragGhost {...drag} pool={allTasks||tasks}/>
     </div>
