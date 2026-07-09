@@ -22,6 +22,11 @@
     .pri-ring-1{box-shadow:0 0 0 2px #ef4444}
     .pri-ring-2{box-shadow:0 0 0 2px #f97316}
     .pri-ring-3{box-shadow:0 0 0 2px #3b82f6}
+    /* Accent color scale — swapped by the theme picker in Settings. Defaults match the original emerald. */
+    :root{
+      --accent-50:#ecfdf5; --accent-100:#d1fae5; --accent-200:#a7f3d0; --accent-300:#6ee7b7;
+      --accent-400:#34d399; --accent-500:#10b981; --accent-600:#059669; --accent-700:#047857; --accent-800:#065f46;
+    }
   </style>
 </head>
 <body>
@@ -181,6 +186,16 @@ const PRI_BG={P1:'bg-red-50',P2:'bg-orange-50',P3:'bg-blue-50',P4:'bg-stone-50'}
 const PRI_LABEL={P1:'🔴 P1 – Priority 1',P2:'🟠 P2 – Priority 2',P3:'🔵 P3 – Priority 3',P4:'⚪ P4 – Priority 4'};
 const EIS=[{k:'do',s:'Do Now',l:'Urgent + Important'},{k:'schedule',s:'Schedule',l:'Important, Not Urgent'},{k:'delegate',s:'Delegate',l:'Urgent, Not Important'},{k:'drop',s:'Drop',l:'Not Urgent/Important'}];
 const RECUR_OPT={daily:'Daily',weekly:'Weekly',monthly:'Monthly',yearly:'Yearly'};
+// Theme presets — each swaps the app's primary accent color scale. Semantic colors (priority, quadrants,
+// due-date states, etc.) are untouched since those carry meaning independent of brand color.
+const THEME_PRESETS={
+  emerald:{label:'Emerald',swatch:'#059669',vars:{50:'#ecfdf5',100:'#d1fae5',200:'#a7f3d0',300:'#6ee7b7',400:'#34d399',500:'#10b981',600:'#059669',700:'#047857',800:'#065f46'}},
+  indigo:{label:'Indigo',swatch:'#4f46e5',vars:{50:'#eef2ff',100:'#e0e7ff',200:'#c7d2fe',300:'#a5b4fc',400:'#818cf8',500:'#6366f1',600:'#4f46e5',700:'#4338ca',800:'#3730a3'}},
+  rose:{label:'Rose',swatch:'#e11d48',vars:{50:'#fff1f2',100:'#ffe4e6',200:'#fecdd3',300:'#fda4af',400:'#fb7185',500:'#f43f5e',600:'#e11d48',700:'#be123c',800:'#9f1239'}},
+  amber:{label:'Amber',swatch:'#d97706',vars:{50:'#fffbeb',100:'#fef3c7',200:'#fde68a',300:'#fcd34d',400:'#fbbf24',500:'#f59e0b',600:'#d97706',700:'#b45309',800:'#92400e'}},
+  teal:{label:'Teal',swatch:'#0d9488',vars:{50:'#f0fdfa',100:'#ccfbf1',200:'#99f6e4',300:'#5eead4',400:'#2dd4bf',500:'#14b8a6',600:'#0d9488',700:'#0f766e',800:'#115e59'}},
+  slate:{label:'Slate',swatch:'#334155',vars:{50:'#f8fafc',100:'#f1f5f9',200:'#e2e8f0',300:'#cbd5e1',400:'#94a3b8',500:'#64748b',600:'#475569',700:'#334155',800:'#1e293b'}},
+};
 const EISEN_OPT={do:'Do First',schedule:'Schedule',delegate:'Delegate',eliminate:'Eliminate'};
 const GOAL_TIERS=[{k:'short',l:'🎯 Short-term',s:'< 3 months'},{k:'medium',l:'📈 Medium-term',s:'3–12 months'},{k:'long',l:'🌟 Long-term',s:'1–3 years'},{k:'vlong',l:'🚀 Very Long-term',s:'3+ years'}];
 const LBL_COLORS=['bg-sky-100 text-sky-700 border-sky-200','bg-amber-100 text-amber-700 border-amber-200','bg-pink-100 text-pink-700 border-pink-200','bg-purple-100 text-purple-700 border-purple-200','bg-teal-100 text-teal-700 border-teal-200','bg-rose-100 text-rose-700 border-rose-200'];
@@ -318,6 +333,15 @@ function App(){
   const [toast,setToast]=useState('');
   const [ready,setReady]=useState(false);
   const [favorites,setFavorites]=useState(()=>ls.get('favorites',[])); // array of {type:'project'|'label',id,name}
+  // Theme — swaps the CSS variables driving the accent color scale
+  const [theme,setThemeRaw]=useState(()=>ls.get('theme','emerald'));
+  const setTheme=name=>{setThemeRaw(name);ls.set('theme',name)};
+  useEffect(()=>{
+    const preset=THEME_PRESETS[theme]||THEME_PRESETS.emerald;
+    Object.entries(preset.vars).forEach(([shade,hex])=>{document.documentElement.style.setProperty('--accent-'+shade,hex)});
+    const meta=document.querySelector('meta[name="theme-color"]');
+    if(meta)meta.setAttribute('content',preset.vars[600]);
+  },[theme]);
   // Overview/Detail toggle — app-wide. Overview collapses sub-tasks and shows minimal per-row info.
   const saveFavs=f=>{setFavorites(f);ls.set('favorites',f)};
   const toggleFav=(type,id,name)=>{const exists=favorites.find(f=>f.type===type&&f.id===id);saveFavs(exists?favorites.filter(f=>!(f.type===type&&f.id===id)):[...favorites,{type,id,name}])};
@@ -596,6 +620,24 @@ function App(){
   // Computed — prjById must come first, others depend on it
   const prjById=id=>projects.find(p=>p.id===id)||projects.find(p=>p.name===id);
   const active=tasks.filter(t=>t.status!=='archived'&&t.status!=='completed');
+  // Labels are derived from what's actually assigned to active tasks — no separate "master list" to
+  // maintain. A label exists exactly as long as some non-completed, non-archived task uses it, and
+  // disappears from suggestions/filters the moment the last task using it is finished or deleted.
+  const usedLabels=useMemo(()=>Array.from(new Set(active.flatMap(t=>t.labels||[]))).sort((a,b)=>a.localeCompare(b)),[active]);
+  const removeLabelEverywhere=name=>{
+    const affected=tasks.filter(t=>(t.labels||[]).includes(name));
+    if(!affected.length)return;
+    pushUndo('🏷️ Removed #'+name+' from '+affected.length+' task'+(affected.length!==1?'s':''),tasks);
+    persist(tasks.map(t=>(t.labels||[]).includes(name)?{...t,labels:t.labels.filter(l=>l!==name)}:t));
+  };
+  const renameLabelEverywhere=(oldName,newName)=>{
+    const clean=(newName||'').trim();
+    if(!clean||clean===oldName)return;
+    const affected=tasks.filter(t=>(t.labels||[]).includes(oldName));
+    if(!affected.length)return;
+    pushUndo('🏷️ Renamed #'+oldName+' → #'+clean,tasks);
+    persist(tasks.map(t=>(t.labels||[]).includes(oldName)?{...t,labels:Array.from(new Set(t.labels.map(l=>l===oldName?clean:l)))}:t));
+  };
   const inbox=active.filter(t=>!t.project).sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||''));
   const td=todayISO();
   const todayTasks=sortDP(active.filter(t=>t.dueDate===td));
@@ -643,36 +685,36 @@ function App(){
   return(
     <div style={{position:'fixed',top:0,left:0,right:0,height:'100dvh',display:'flex',background:'#F7F7F5'}} className="flex-col md:flex-row">
       {/* Desktop sidebar — Todoist-style persistent left rail, hidden on mobile where the bottom bar takes over */}
-      <Sidebar view={view} nav={nav} projects={projects} labels={labels} tasks={active} favorites={favorites} onToggleFav={toggleFav} todayN={todayN} inboxN={inboxN} onAddTask={()=>setShowQuickAdd(true)}/>
+      <Sidebar view={view} nav={nav} projects={projects} labels={usedLabels} tasks={active} favorites={favorites} onToggleFav={toggleFav} todayN={todayN} inboxN={inboxN} onAddTask={()=>setShowQuickAdd(true)}/>
       <div className="flex-1 flex flex-col min-w-0" style={{position:'relative',minHeight:0}}>
       {undoState?(
         <div className="fixed top-4 left-4 right-4 md:left-auto md:right-6 md:w-96 z-50 bg-stone-900 text-white text-sm font-bold px-4 py-3 rounded-2xl shadow-xl flex items-center justify-between gap-3">
           <span className="truncate">{undoState.msg}</span>
-          <button onClick={doUndo} className="text-emerald-400 font-black flex-shrink-0">UNDO</button>
+          <button onClick={doUndo} className="text-[var(--accent-400)] font-black flex-shrink-0">UNDO</button>
         </div>
       ):toast&&<div className="fixed top-4 left-4 right-4 md:left-auto md:right-6 md:w-96 z-50 bg-stone-900 text-white text-sm font-bold px-4 py-3 rounded-2xl text-center shadow-xl">{toast}</div>}
-      {refreshing&&<div className="fixed top-4 left-1/2 z-50 bg-emerald-600 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-xl" style={{transform:'translateX(-50%)'}}>🔄 Syncing…</div>}
+      {refreshing&&<div className="fixed top-4 left-1/2 z-50 bg-[var(--accent-600)] text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-xl" style={{transform:'translateX(-50%)'}}>🔄 Syncing…</div>}
 
       {/* Main content */}
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" onTouchStart={onTouchStartMain} onTouchMove={onTouchMoveMain} onTouchEnd={onTouchEndMain}>
         <div className="md:max-w-3xl md:mx-auto">
         {view.tab==='today'   &&<TodayView overdue={overdueTasks} today={todayTasks} upcoming={upcomingTasks} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} lastWeeklyReview={lastWeeklyReview} onOpenReview={()=>nav('review')}/>}
-        {view.tab==='inbox'   &&<InboxView tasks={inbox} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
-        {view.tab==='browse'  &&<BrowseView projects={projects} labels={labels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
-        {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={labels} onNav={nav} onSaveLbls={persistLbls} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects} customFilters={customFilters} onSaveFilters={persistFilters}/>}
+        {view.tab==='inbox'   &&<InboxView tasks={inbox} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} labels={usedLabels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='browse'  &&<BrowseView projects={projects} labels={usedLabels} tasks={active} goals={goals} doneTasks={doneTasks} archivedTasks={archivedTasks} onNav={nav} onEdit={setEditTask} onSavePrjs={persistPrjs} favorites={favorites} onToggleFav={toggleFav}/>}
+        {view.tab==='filters' &&<FiltersLabelsView tasks={active} labels={usedLabels} onNav={nav} onRenameLabel={renameLabelEverywhere} onRemoveLabel={removeLabelEverywhere} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} projects={projects} customFilters={customFilters} onSaveFilters={persistFilters}/>}
         {view.tab==='customFilter' &&<CustomFilterView filter={view.filter} tasks={active} projects={projects} onBack={()=>nav('filters')} onEdit={setEditTask} onComplete={complete} onToggleSub={toggleSub} onDelFilter={id=>{persistFilters(customFilters.filter(f=>f.id!==id));nav('filters')}}/>}
-        {view.tab==='web'     &&<WebView tasks={active} labels={labels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
-        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} onNav={nav} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection} onOpenQuickAdd={openQuickAddForSection}/>}
-        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} labels={labels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
-        {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={labels} projects={projects}/>}
-        {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={labels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
-        {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={labels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
+        {view.tab==='web'     &&<WebView tasks={active} labels={usedLabels} projects={projects} onEdit={setEditTask} onComplete={complete}/>}
+        {view.tab==='project' &&<ProjectView key={view.prjId} prj={prjById(view.prjId)} tasks={prjTasks(view.prjId)} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} onNav={nav} labels={usedLabels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect} sections={sections} onSaveSections={persistSections} onAddTask={addTask} onQuickMoveSection={quickMoveSection} onOpenQuickAdd={openQuickAddForSection}/>}
+        {view.tab==='label'   &&<LabelView lbl={view.lbl} tasks={active.filter(t=>(t.labels||[]).includes(view.lbl))} allTasks={active} onReparent={reparentTask} onComplete={complete} onEdit={setEditTask} onBack={()=>nav('browse')} labels={usedLabels} projects={projects} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={usedLabels} projects={projects}/>}
+        {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={usedLabels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
+        {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={usedLabels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
         {view.tab==='eisenhower' &&<EisenhowerView tasks={active} onEdit={setEditTask} onComplete={complete} projects={projects} onBulkAssign={bulkAssignEisenhower}/>}
         {view.tab==='mission' &&<MissionView mission={mission} history={missionHistory} onSave={saveMission}/>}
         {view.tab==='circle' &&<CircleView items={circleItems} onSave={persistCircle} onPromote={(text,id)=>{persistCircle(circleItems.filter(i=>i.id!==id));setQuickAddPrefill(text);setShowQuickAdd(true)}}/>}
         {view.tab==='review' &&<WeeklyReviewView inboxCount={inbox.length} overdueCount={overdueTasks.length} overdueTasks={overdueTasks} goalTasks={goals} circleItems={circleItems} weekPool={[...todayTasks,...upcomingTasks]} onToggleFocus={toggleWeeklyFocus} onNav={nav} onFinish={finishWeeklyReview} lastWeeklyReview={lastWeeklyReview} reviewHistory={reviewHistory}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
-        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={labels} onSaveLbls={persistLbls} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON}/>}
+        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={usedLabels} onRemoveLabel={removeLabelEverywhere} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON} theme={theme} setTheme={setTheme}/>}
         </div>
       </div>
 
@@ -736,14 +778,14 @@ function App(){
           <div className="absolute inset-0 bg-black/50" onClick={()=>setShowLblAssign(false)}/>
           <div className="relative bg-white rounded-t-3xl p-5 w-full">
             <p className="text-sm font-black text-stone-800 mb-3">🏷️ Assign labels to {selected.length} tasks</p>
-            <LblPicker labels={labels} onConfirm={assignLabels} onClose={()=>setShowLblAssign(false)}/>
+            <LblPicker labels={usedLabels} onConfirm={assignLabels} onClose={()=>setShowLblAssign(false)}/>
           </div>
         </div>
       )}
 
       {/* FAB — hidden on desktop, where the sidebar's Add task button covers this */}
       {!showQuickAdd&&!selectMode&&(
-        <button onClick={()=>setShowQuickAdd(true)} className="md:hidden fixed z-30 bg-emerald-600 text-white shadow-2xl active:bg-emerald-700 flex items-center justify-center" style={{right:20,bottom:80,width:56,height:56,borderRadius:'50%',fontSize:28,lineHeight:1}}>+</button>
+        <button onClick={()=>setShowQuickAdd(true)} className="md:hidden fixed z-30 bg-[var(--accent-600)] text-white shadow-2xl active:bg-[var(--accent-700)] flex items-center justify-center" style={{right:20,bottom:80,width:56,height:56,borderRadius:'50%',fontSize:28,lineHeight:1}}>+</button>
       )}
 
       {/* Bulk select action bar */}
@@ -760,7 +802,7 @@ function App(){
           )}
           <button onClick={()=>setSelected([...selPool])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">All</button>
           <button onClick={()=>setSelected([])} className="text-xs bg-stone-100 text-stone-600 px-2.5 py-1.5 rounded-xl font-semibold flex-shrink-0">None</button>
-          <button onClick={copySelected} disabled={!selected.length} className="text-xs bg-emerald-100 text-emerald-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">📋</button>
+          <button onClick={copySelected} disabled={!selected.length} className="text-xs bg-[var(--accent-100)] text-[var(--accent-700)] px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">📋</button>
           <button onClick={()=>selected.length&&setShowLblAssign(true)} disabled={!selected.length} className="text-xs bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">🏷️</button>
           <button onClick={()=>selected.length&&setShowPrjMove(true)} disabled={!selected.length} className="text-xs bg-indigo-50 text-indigo-700 px-2.5 py-1.5 rounded-xl font-bold flex-shrink-0 disabled:opacity-40">📁 Move</button>
           {view.tab==='project'&&sections.some(s=>s.projectId===view.prjId&&!s.archived)&&(
@@ -775,7 +817,7 @@ function App(){
       {/* Bottom nav — mobile only. Desktop uses the sidebar instead. */}
       <nav className="md:hidden bg-white border-t border-stone-100 flex justify-around items-center px-1 flex-shrink-0" style={{paddingTop:8,paddingBottom:10}}>
         {[{k:'today',e:'🏠',l:'Today',n:todayN},{k:'inbox',e:'📥',l:'Inbox',n:inboxN},{k:'browse',e:'📁',l:'Browse'},{k:'search',e:'🔍',l:'Search'},{k:'scheduled',e:'📅',l:'Upcoming'}].map(({k,e,l,n})=>(
-          <button key={k} onClick={()=>nav(k)} className={'relative flex flex-col items-center gap-0.5 px-2 py-0.5 rounded-xl '+(view.tab===k?'text-emerald-600':'text-stone-400')}>
+          <button key={k} onClick={()=>nav(k)} className={'relative flex flex-col items-center gap-0.5 px-2 py-0.5 rounded-xl '+(view.tab===k?'text-[var(--accent-600)]':'text-stone-400')}>
             <span style={{fontSize:20,lineHeight:1}}>{e}</span>
             <span style={{fontSize:9,fontWeight:700}}>{l}</span>
             {n>0&&<span className="absolute bg-red-500 text-white font-bold rounded-full flex items-center justify-center" style={{fontSize:8,minWidth:13,height:13,padding:'0 2px',top:-2,right:-2}}>{n>99?'99+':n}</span>}
@@ -784,9 +826,9 @@ function App(){
       </nav>
 
       {/* Quick Add */}
-      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>{setShowQuickAdd(false);setQuickAddSectionId(null);setQuickAddPrefill('')}} projects={projects} labels={labels} ctxProject={ctxProject} ctxSection={quickAddSectionId?sections.find(s=>s.id===quickAddSectionId):null} sections={sections} allTasks={tasks} initialText={quickAddPrefill}/>}
+      {showQuickAdd&&<QuickAdd onAdd={addTask} onClose={()=>{setShowQuickAdd(false);setQuickAddSectionId(null);setQuickAddPrefill('')}} projects={projects} labels={usedLabels} ctxProject={ctxProject} ctxSection={quickAddSectionId?sections.find(s=>s.id===quickAddSectionId):null} sections={sections} allTasks={tasks} initialText={quickAddPrefill}/>}
       {/* Task Edit Modal */}
-      {editTask&&<TaskModal task={editTask} labels={labels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddLbl={l=>persistLbls([...labels,l])} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections} onAddChildTask={text=>addTask({text,parentId:editTask.id,project:editTask.project,sectionId:editTask.sectionId,status:editTask.status==='inbox'?'active':editTask.status})} onCompleteChild={complete} onOutdentChild={id=>{const child=tasks.find(x=>x.id===id);const parent=child&&tasks.find(x=>x.id===child.parentId);pushUndo('⬅ Outdented sub-task',tasks);persist(tasks.map(x=>x.id===id?{...x,parentId:parent?parent.parentId||null:null}:x))}} onDelChild={del}/>}
+      {editTask&&<TaskModal task={editTask} labels={usedLabels} projects={projects} allTasks={tasks} gcalOk={gcalOk} onSave={saveEdit} onClose={()=>setEditTask(null)} onDel={()=>{del(editTask.id);setEditTask(null)}} onArch={()=>{archive(editTask.id);setEditTask(null)}} onAddPrj={p=>persistPrjs([...projects,p])} sections={sections} onAddChildTask={text=>addTask({text,parentId:editTask.id,project:editTask.project,sectionId:editTask.sectionId,status:editTask.status==='inbox'?'active':editTask.status})} onCompleteChild={complete} onOutdentChild={id=>{const child=tasks.find(x=>x.id===id);const parent=child&&tasks.find(x=>x.id===child.parentId);pushUndo('⬅ Outdented sub-task',tasks);persist(tasks.map(x=>x.id===id?{...x,parentId:parent?parent.parentId||null:null}:x))}} onDelChild={del}/>}
       </div>
     </div>
   );
@@ -845,7 +887,7 @@ function DragGhost({dragId,hoverId,pos,pool}){
   if(!task)return null;
   return(
     <div className="fixed z-[70] pointer-events-none" style={{left:Math.min(pos.x+18,window.innerWidth-240),top:pos.y-12}}>
-      <div className="bg-white rounded-xl px-3 py-2 shadow-2xl border-2 border-emerald-400" style={{maxWidth:220}}>
+      <div className="bg-white rounded-xl px-3 py-2 shadow-2xl border-2 border-[var(--accent-400)]" style={{maxWidth:220}}>
         <p className="text-xs font-semibold text-stone-800 truncate">{task.text}</p>
         {target?(
           <p className="text-[10px] text-violet-600 font-bold mt-1 flex items-center gap-1">
@@ -887,12 +929,12 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
   const isDropTarget=hoverId===task.id;
 
   return(
-    <div data-taskrow={task.id} className={'bg-white select-none '+(done?'opacity-60':'')+(isSelected?' bg-emerald-50':'')+(isBeingDragged?' opacity-30':'')+(isDropTarget?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={{WebkitTouchCallout:'none',WebkitUserSelect:'none',userSelect:'none',touchAction:(selectMode&&isSelected)?'none':'auto',...(depth?{marginLeft:depth*18}:{})}}>
+    <div data-taskrow={task.id} className={'bg-white select-none '+(done?'opacity-60':'')+(isSelected?' bg-[var(--accent-50)]':'')+(isBeingDragged?' opacity-30':'')+(isDropTarget?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={{WebkitTouchCallout:'none',WebkitUserSelect:'none',userSelect:'none',touchAction:(selectMode&&isSelected)?'none':'auto',...(depth?{marginLeft:depth*18}:{})}}>
       <div className="flex gap-3 px-4 py-3" onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={endTouch} onTouchMove={moveTouch} onMouseDown={startLP} onMouseMove={moveTouch} onMouseUp={endTouch} onMouseLeave={cancelLP}>
         {depth>0&&<span className="text-stone-300 flex-shrink-0 select-none" style={{marginTop:2}}>↳</span>}
         {/* Priority circle / select checkbox */}
         {selectMode?(
-          <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+          <div className={'mt-0.5 w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-[var(--accent-500)] border-[var(--accent-500)]':'border-stone-300')}>
             {isSelected&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
           </div>
         ):isHeading?(
@@ -916,7 +958,7 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
           {orphanParentText&&<p className="text-[10px] text-violet-400 font-semibold mt-0.5 truncate">↳ Sub-task of "{orphanParentText.slice(0,40)}"</p>}
           <div className="flex flex-wrap items-center gap-2 mt-1">
             {task.dueDate&&(
-              <span className={'text-[11px] font-semibold '+(isOverdue(task.dueDate)&&!done?'text-red-500':task.dueDate===todayISO()?'text-emerald-600':'text-stone-400')}>
+              <span className={'text-[11px] font-semibold '+(isOverdue(task.dueDate)&&!done?'text-red-500':task.dueDate===todayISO()?'text-[var(--accent-600)]':'text-stone-400')}>
                 📅 {fmtDate(task.dueDate)}{task.dueTime?' ⏰ '+fmtTime(task.dueTime):''}{auto&&!done?' ⬆':''}
               </span>
             )}
@@ -975,7 +1017,7 @@ function TodayView({overdue,today,upcoming,allTasks,onReparent,onComplete,onEdit
       )}
       {today.length>0&&(
         <div className="mb-2">
-          <div className="px-4 py-2"><span className="text-xs font-black text-emerald-600 uppercase tracking-widest">📌 Today ({today.length})</span></div>
+          <div className="px-4 py-2"><span className="text-xs font-black text-[var(--accent-600)] uppercase tracking-widest">📌 Today ({today.length})</span></div>
           {renderNested(today,allTasks,rp)}
         </div>
       )}
@@ -1041,7 +1083,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
           <div className="absolute inset-0 bg-black/50" onClick={()=>setShowProfile(false)}/>
           <div className="relative bg-stone-900 w-64 h-full shadow-2xl p-5 flex flex-col gap-1 overflow-y-auto">
             <div className="flex items-center gap-3 mb-5 mt-2">
-              <div className="w-10 h-10 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-lg">J</div>
+              <div className="w-10 h-10 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white font-black text-lg">J</div>
               <div><p className="text-white font-black text-base">Jayesh Bhagat</p><p className="text-stone-400 text-xs">Site-in-Charge · WWC</p></div>
             </div>
             {[{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'📋',l:'Weekly Review',tab:'review'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'🧭',l:'My Mission',tab:'mission'},{ico:'🌤️',l:'Circle of Influence',tab:'circle'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
@@ -1092,7 +1134,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
 
       {/* Profile header */}
       <div className="flex items-center gap-3 px-4 pt-5 pb-3 border-b border-stone-100">
-        <button onClick={()=>setShowProfile(true)} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-base flex-shrink-0">J</button>
+        <button onClick={()=>setShowProfile(true)} className="w-9 h-9 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white font-black text-base flex-shrink-0">J</button>
         <span className="flex-1 font-black text-stone-900 text-lg">Jayesh Bhagat</span>
         <button onClick={()=>setShowProfile(true)} className="text-stone-400 text-xl px-1">⚙️</button>
       </div>
@@ -1160,7 +1202,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
         <div className="mt-2 pb-6">
           <div className="flex items-center justify-between px-4 py-2">
             <span className="text-xs font-black text-stone-500 uppercase tracking-widest">Labels</span>
-            <button onClick={()=>onNav('filters')} className="text-xs text-emerald-600 font-semibold">See all</button>
+            <button onClick={()=>onNav('filters')} className="text-xs text-[var(--accent-600)] font-semibold">See all</button>
           </div>
           <div className="flex flex-wrap gap-2 px-4">
             {labels.map(l=>(
@@ -1177,8 +1219,9 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
 }
 
 /* ── Filters & Labels View ───────────────────────────── */
-function FiltersLabelsView({tasks,labels,onNav,onSaveLbls,onEdit,onComplete,onToggleSub,projects,customFilters,onSaveFilters}){
+function FiltersLabelsView({tasks,labels,onNav,onRenameLabel,onRemoveLabel,onEdit,onComplete,onToggleSub,projects,customFilters,onSaveFilters}){
   const [newLbl,setNewLbl]=useState('');
+  const [editingLbl,setEditingLbl]=useState(null);
   const [showBuilder,setShowBuilder]=useState(false);
   const [fName,setFName]=useState('');
   const [fPrj,setFPrj]=useState('');
@@ -1226,7 +1269,7 @@ function FiltersLabelsView({tasks,labels,onNav,onSaveLbls,onEdit,onComplete,onTo
           </div>
         ))}
         {!showBuilder?(
-          <button onClick={()=>setShowBuilder(true)} className="w-full text-left px-4 py-3 text-xs font-bold text-emerald-600">+ Create custom filter</button>
+          <button onClick={()=>setShowBuilder(true)} className="w-full text-left px-4 py-3 text-xs font-bold text-[var(--accent-600)]">+ Create custom filter</button>
         ):(
           <div className="mx-4 my-2 bg-stone-50 rounded-2xl p-3 space-y-2">
             <input value={fName} onChange={e=>setFName(e.target.value)} placeholder="Filter name…" className="w-full px-3 py-2 text-sm border border-stone-200 rounded-xl bg-white focus:outline-none"/>
@@ -1234,31 +1277,34 @@ function FiltersLabelsView({tasks,labels,onNav,onSaveLbls,onEdit,onComplete,onTo
             <select value={fLbl} onChange={e=>setFLbl(e.target.value)} className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white"><option value="">Any label</option>{labels.map(l=><option key={l} value={l}>#{l}</option>)}</select>
             <select value={fPri} onChange={e=>setFPri(e.target.value)} className="w-full px-3 py-2 text-xs border border-stone-200 rounded-xl bg-white"><option value="">Any priority</option>{['P1','P2','P3','P4'].map(p=><option key={p} value={p}>{p}</option>)}</select>
             <div className="flex gap-2">
-              <button onClick={saveFilter} disabled={!fName.trim()} className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold disabled:opacity-40">Save filter</button>
+              <button onClick={saveFilter} disabled={!fName.trim()} className="flex-1 py-2 bg-[var(--accent-600)] text-white rounded-xl text-xs font-bold disabled:opacity-40">Save filter</button>
               <button onClick={()=>setShowBuilder(false)} className="px-3 py-2 bg-white border border-stone-200 rounded-xl text-xs text-stone-500">Cancel</button>
             </div>
           </div>
         )}
       </div>
-      {/* Labels */}
+      {/* Labels — derived from what's actually on your active tasks. Assign a #label from Quick Add
+          or a task's edit form to create one; it disappears automatically once nothing uses it. */}
       <div>
         <div className="flex items-center justify-between px-4 pb-2">
           <p className="text-xs font-black text-stone-400 uppercase tracking-widest">Labels</p>
         </div>
+        {!labels.length&&<p className="px-4 pb-3 text-xs text-stone-300">No labels in use yet — type #something in Quick Add or a task's edit form to create one.</p>}
         {labels.map(l=>(
           <div key={l} className="flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50">
-            <button onClick={()=>onNav('label',{lbl:l})} className="flex items-center gap-3 flex-1 min-w-0">
-              <span className="text-lg text-emerald-500">◈</span>
-              <span className="flex-1 text-left text-sm font-semibold text-stone-700">{l}</span>
-              <span className="text-xs text-stone-400">{tasks.filter(t=>(t.labels||[]).includes(l)).length}</span>
-            </button>
-            <button onClick={()=>onSaveLbls(labels.filter(x=>x!==l))} className="text-stone-200 text-xl active:text-red-400 px-1">×</button>
+            {editingLbl===l?(
+              <input autoFocus defaultValue={l} onBlur={e=>{onRenameLabel(l,e.target.value.trim());setEditingLbl(null)}} onKeyDown={e=>{if(e.key==='Enter')e.target.blur();if(e.key==='Escape')setEditingLbl(null)}} className="flex-1 px-2 py-1 text-sm border border-stone-200 rounded-lg bg-stone-50 focus:outline-none"/>
+            ):(
+              <button onClick={()=>onNav('label',{lbl:l})} className="flex items-center gap-3 flex-1 min-w-0">
+                <span className="text-lg text-[var(--accent-500)]">◈</span>
+                <span className="flex-1 text-left text-sm font-semibold text-stone-700">{l}</span>
+                <span className="text-xs text-stone-400">{tasks.filter(t=>(t.labels||[]).includes(l)).length}</span>
+              </button>
+            )}
+            <button onClick={()=>setEditingLbl(editingLbl===l?null:l)} className="text-stone-300 text-xs px-1">✎</button>
+            <button onClick={()=>onRemoveLabel(l)} className="text-stone-200 text-xl active:text-red-400 px-1">×</button>
           </div>
         ))}
-        <div className="flex gap-2 px-4 py-3">
-          <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&newLbl.trim()&&(onSaveLbls([...labels,newLbl.trim()]),setNewLbl(''))} placeholder="New label…" className="flex-1 px-3 py-2 text-sm border border-stone-200 rounded-xl focus:outline-none bg-stone-50 focus:border-emerald-400"/>
-          <button onClick={()=>{if(newLbl.trim()){onSaveLbls([...labels,newLbl.trim()]);setNewLbl('')}}} disabled={!newLbl.trim()} className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-sm font-bold disabled:opacity-40">Add</button>
-        </div>
       </div>
     </div>
   );
@@ -1306,10 +1352,10 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
       {/* Focused cluster view */}
       {focus&&(
         <div className="px-4">
-          <button onClick={()=>setFocus(null)} className="text-xs text-emerald-600 font-black mb-3 flex items-center gap-1">← All clusters</button>
-          <div className="bg-emerald-50 border-2 border-emerald-200 rounded-2xl p-3 mb-3">
-            <p className="text-sm font-black text-emerald-800">{focus.startsWith('p:')?('📁 '+(focusPrj?focusPrj.name:focus.slice(2))):('# '+focus.slice(2))}</p>
-            <p className="text-xs text-emerald-600 mt-0.5">{focusTasks.length} thought{focusTasks.length!==1?'s':''} connected here</p>
+          <button onClick={()=>setFocus(null)} className="text-xs text-[var(--accent-600)] font-black mb-3 flex items-center gap-1">← All clusters</button>
+          <div className="bg-[var(--accent-50)] border-2 border-[var(--accent-200)] rounded-2xl p-3 mb-3">
+            <p className="text-sm font-black text-[var(--accent-800)]">{focus.startsWith('p:')?('📁 '+(focusPrj?focusPrj.name:focus.slice(2))):('# '+focus.slice(2))}</p>
+            <p className="text-xs text-[var(--accent-600)] mt-0.5">{focusTasks.length} thought{focusTasks.length!==1?'s':''} connected here</p>
           </div>
           {!focusTasks.length&&<div className="text-center py-10"><div style={{fontSize:40}}>🕸️</div><p className="text-sm font-bold text-stone-500 mt-2">No thoughts here yet</p></div>}
           {focusTasks.map(t=>{
@@ -1319,10 +1365,10 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
             return(
               <div key={t.id} className="bg-white rounded-2xl border border-stone-100 p-3 mb-2.5 shadow-sm" onClick={()=>onEdit(t)}>
                 <div className="flex items-start gap-2">
-                  <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className={'mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 '+(t.status==='completed'?'bg-emerald-500 border-emerald-500':'border-stone-300')}/>
+                  <button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className={'mt-0.5 w-4 h-4 rounded-full border-2 flex-shrink-0 '+(t.status==='completed'?'bg-[var(--accent-500)] border-[var(--accent-500)]':'border-stone-300')}/>
                   <p className={'text-sm leading-snug flex-1 '+(t.status==='completed'?'line-through text-stone-400':'text-stone-800')}>{t.text}</p>
                 </div>
-                {t.dueDate&&<p className="text-[10px] text-emerald-600 mt-1 ml-6">📅 {fmtDate(t.dueDate)}</p>}
+                {t.dueDate&&<p className="text-[10px] text-[var(--accent-600)] mt-1 ml-6">📅 {fmtDate(t.dueDate)}</p>}
                 {(otherLbls.length>0||otherProjKey)&&(
                   <div className="flex gap-1.5 mt-2 flex-wrap items-center ml-6">
                     <span className="text-[10px] text-stone-400">🔗</span>
@@ -1510,10 +1556,10 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
           <button onClick={()=>{setAddingSection(false);setNewSecName('')}} className="px-3 py-2 text-stone-400 text-xs font-bold">✕</button>
         </div>
       )}
-      {active.length===0&&<div className="text-center py-12"><div style={{fontSize:40}}>✅</div><p className="text-sm font-bold text-stone-500 mt-2">All done in {prj.name}</p></div>}
+      {active.length===0&&prjSections.length===0&&<div className="text-center py-12"><div style={{fontSize:40}}>✅</div><p className="text-sm font-bold text-stone-500 mt-2">All done in {prj.name}</p></div>}
 
       {/* List view: grouped by section */}
-      {viewMode==='list'&&active.length>0&&(
+      {viewMode==='list'&&(active.length>0||prjSections.length>0)&&(
         <React.Fragment>
           {noSection.length>0&&prjSections.length>0&&<div className="px-4 py-1.5"><span className="text-[10px] font-black text-stone-400 uppercase tracking-widest">No Section</span></div>}
           {renderNested(noSection,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,sharedSeen:nestSeen,...rowDrag})}
@@ -1552,11 +1598,11 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
       {viewMode==='list'&&<DragGhost {...rowDrag} pool={allTasks||tasks}/>}
 
       {/* Kanban view: sections as columns — drag a card to move it, or tap to open */}
-      {viewMode==='kanban'&&active.length>0&&(
+      {viewMode==='kanban'&&(active.length>0||prjSections.length>0)&&(
         <React.Fragment>
         <p className="px-4 pb-2 text-[10px] text-stone-300">Drag a card to another column to move it — or tap to open</p>
         <div ref={kanbanScrollRef} className="flex gap-3 px-4 overflow-x-auto pb-2" style={{scrollbarWidth:'none'}}>
-          <div data-colkey="none" className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol==='none'?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
+          <div data-colkey="none" className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol==='none'?'bg-[var(--accent-100)] ring-2 ring-[var(--accent-300)]':'bg-stone-50')} style={{width:220}}>
             <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">No Section · {noSection.length}</p>
             {noSection.map(t=>(
               <div key={t.id} onMouseDown={e=>onCardDown(e,t,'none')} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t,'none')} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
@@ -1572,7 +1618,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
             <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(null)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
           </div>
           {prjSections.map(sec=>(
-            <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-emerald-100 ring-2 ring-emerald-300':'bg-stone-50')} style={{width:220}}>
+            <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-[var(--accent-100)] ring-2 ring-[var(--accent-300)]':'bg-stone-50')} style={{width:220}}>
               <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">{sec.name} · {inSection(sec.id).length}</p>
               {inSection(sec.id).map(t=>(
                 <div key={t.id} onMouseDown={e=>onCardDown(e,t,sec.id)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t,sec.id)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
@@ -1590,7 +1636,7 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
           ))}
         </div>
         {dragTaskId&&(
-          <div className="fixed z-50 pointer-events-none bg-white rounded-xl p-2.5 shadow-2xl border-2 border-emerald-400" style={{left:dragPos.x-90,top:dragPos.y-20,width:180}}>
+          <div className="fixed z-50 pointer-events-none bg-white rounded-xl p-2.5 shadow-2xl border-2 border-[var(--accent-400)]" style={{left:dragPos.x-90,top:dragPos.y-20,width:180}}>
             <p className="text-xs font-semibold text-stone-800 leading-snug">{dragInfo.current.text}</p>
           </div>
         )}
@@ -1666,9 +1712,9 @@ function SchedRow({t,projects,selectMode,isSelected,onSelect,onComplete,onEdit,o
   const cancelLP=()=>{if(lpTimer.current){clearTimeout(lpTimer.current);lpTimer.current=null}};
   const handleClick=()=>{if(lpFired.current){lpFired.current=false;return}selectMode?onSelect&&onSelect(t.id):onEdit(t)};
   return(
-    <div className={'flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50 '+(isSelected?'bg-emerald-50':'')} onClick={handleClick} onTouchStart={startLP} onTouchEnd={cancelLP} onTouchMove={cancelLP} onMouseDown={startLP} onMouseUp={cancelLP} onMouseLeave={cancelLP}>
+    <div className={'flex items-center gap-3 px-4 py-3.5 bg-white border-b border-stone-50 '+(isSelected?'bg-[var(--accent-50)]':'')} onClick={handleClick} onTouchStart={startLP} onTouchEnd={cancelLP} onTouchMove={cancelLP} onMouseDown={startLP} onMouseUp={cancelLP} onMouseLeave={cancelLP}>
       {selectMode?(
-        <div className={'w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+        <div className={'w-5 h-5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSelected?'bg-[var(--accent-500)] border-[var(--accent-500)]':'border-stone-300')}>
           {isSelected&&<svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>}
         </div>
       ):(
@@ -1789,8 +1835,8 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
               const isPast=iso<todayStr;
               return(
                 <button key={i} onClick={()=>jumpToDate(iso)} className="flex flex-col items-center py-0.5">
-                  <span className={'w-7 h-7 flex items-center justify-center rounded-full text-xs font-bold '+(isToday?'bg-emerald-500 text-white':isPast?'text-stone-300':'text-stone-700')}>{d.getDate()}</span>
-                  {hasTasks&&<span className={'w-1 h-1 rounded-full mt-0.5 '+(isToday?'bg-white':isPast?'bg-red-300':'bg-emerald-400')}/>}
+                  <span className={'w-7 h-7 flex items-center justify-center rounded-full text-xs font-bold '+(isToday?'bg-[var(--accent-500)] text-white':isPast?'text-stone-300':'text-stone-700')}>{d.getDate()}</span>
+                  {hasTasks&&<span className={'w-1 h-1 rounded-full mt-0.5 '+(isToday?'bg-white':isPast?'bg-red-300':'bg-[var(--accent-400)]')}/>}
                 </button>
               );
             })}
@@ -1816,10 +1862,10 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
             return(
               <button key={i} onClick={()=>{setSelectedDay(iso);const el=document.getElementById('day-'+iso);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}}
                 className="flex flex-col items-center py-1">
-                <span className={'w-9 h-9 flex items-center justify-center rounded-full text-sm font-bold transition-all '+(isToday?'bg-emerald-500 text-white':(isSelected?'bg-stone-200 text-stone-800':'text-stone-700'))}>
+                <span className={'w-9 h-9 flex items-center justify-center rounded-full text-sm font-bold transition-all '+(isToday?'bg-[var(--accent-500)] text-white':(isSelected?'bg-stone-200 text-stone-800':'text-stone-700'))}>
                   {d.getDate()}
                 </span>
-                {hasTasks&&<span className={'w-1.5 h-1.5 rounded-full mt-0.5 '+(isToday?'bg-white':'bg-emerald-400')}/>}
+                {hasTasks&&<span className={'w-1.5 h-1.5 rounded-full mt-0.5 '+(isToday?'bg-white':'bg-[var(--accent-400)]')}/>}
               </button>
             );
           })}
@@ -1827,7 +1873,7 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
         {/* Week navigation */}
         <div className="flex justify-between items-center px-4 mt-2">
           <button onClick={()=>setWeekOffset(w=>w-1)} className="text-xs text-stone-400 font-semibold px-2 py-1 active:bg-stone-100 rounded-lg">‹ Prev</button>
-          {weekOffset!==0&&<button onClick={()=>setWeekOffset(0)} className="text-xs text-emerald-600 font-bold px-2 py-1">Today</button>}
+          {weekOffset!==0&&<button onClick={()=>setWeekOffset(0)} className="text-xs text-[var(--accent-600)] font-bold px-2 py-1">Today</button>}
           <button onClick={()=>setWeekOffset(w=>w+1)} className="text-xs text-stone-400 font-semibold px-2 py-1 active:bg-stone-100 rounded-lg">Next ›</button>
         </div>
       </div>
@@ -1865,7 +1911,7 @@ function ScheduledView({tasks,onComplete,onEdit,onToggleSub,projects,labels,sele
             <div key={date} id={'day-'+date} className="mb-1">
               {/* Day header */}
               <button onClick={()=>toggleDay(date)} className="w-full flex items-center justify-between px-4 py-3 bg-stone-50 active:bg-stone-100">
-                <span className={'text-base font-black '+(date===todayStr?'text-emerald-600':'text-stone-800')}>{fmtDayHeader(date)}</span>
+                <span className={'text-base font-black '+(date===todayStr?'text-[var(--accent-600)]':'text-stone-800')}>{fmtDayHeader(date)}</span>
                 <span className="text-stone-400 text-xs">{collapsed?'▸':'▾'}</span>
               </button>
               {/* Tasks */}
@@ -1906,8 +1952,8 @@ function MissionView({mission,history,onSave}){
           <p>• What would "a good week" look like, if you got to define it?</p>
         </div>
       )}
-      <textarea value={text} onChange={e=>setText(e.target.value)} placeholder="Write your mission…" rows={10} className="w-full px-4 py-3 text-sm border border-stone-200 rounded-2xl bg-white focus:outline-none focus:border-emerald-400 leading-relaxed"/>
-      <button onClick={()=>onSave(text)} disabled={!dirty} className="w-full mt-3 py-3 bg-emerald-600 text-white rounded-2xl font-black text-sm disabled:opacity-30">Save</button>
+      <textarea value={text} onChange={e=>setText(e.target.value)} placeholder="Write your mission…" rows={10} className="w-full px-4 py-3 text-sm border border-stone-200 rounded-2xl bg-white focus:outline-none focus:border-[var(--accent-400)] leading-relaxed"/>
+      <button onClick={()=>onSave(text)} disabled={!dirty} className="w-full mt-3 py-3 bg-[var(--accent-600)] text-white rounded-2xl font-black text-sm disabled:opacity-30">Save</button>
       {history.length>0&&(
         <div className="mt-6">
           <button onClick={()=>setShowHistory(!showHistory)} className="text-xs font-black text-stone-400 uppercase tracking-widest">
@@ -1960,7 +2006,7 @@ function CircleView({items,onSave,onPromote}){
         <button onClick={add} className="px-4 py-2.5 bg-stone-800 text-white rounded-xl text-xs font-bold">Add</button>
       </div>
       <Col title="😟 Circle of Concern" sub="Things weighing on you — not yet clear what to do about them" list={concerns} color="#9ca3af"
-        action={i=><button onClick={()=>moveTo(i.id,'influence')} className="text-[10px] font-bold text-emerald-600 whitespace-nowrap">→ I can act</button>}/>
+        action={i=><button onClick={()=>moveTo(i.id,'influence')} className="text-[10px] font-bold text-[var(--accent-600)] whitespace-nowrap">→ I can act</button>}/>
       <Col title="🎯 Circle of Influence" sub="Things you can actually do something about" list={influence} color="#059669"
         action={i=><button onClick={()=>onPromote(i.text,i.id)} className="text-[10px] font-bold text-indigo-600 whitespace-nowrap">→ Make it an action</button>}/>
     </div>
@@ -1980,7 +2026,7 @@ function WeeklyReviewView({inboxCount,overdueCount,overdueTasks,goalTasks,circle
       <h2 className="text-3xl font-black text-stone-900 mb-1">📋 Weekly Review</h2>
       <p className="text-sm text-stone-400 mb-1">{lastWeeklyReview?'Last review: '+new Date(lastWeeklyReview).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'No review done yet'}</p>
       <div className="flex gap-1 mb-5 mt-3">
-        {STEPS.map((s,i)=><div key={s} className={'flex-1 h-1 rounded-full '+(i<=step?'bg-emerald-500':'bg-stone-100')}/>)}
+        {STEPS.map((s,i)=><div key={s} className={'flex-1 h-1 rounded-full '+(i<=step?'bg-[var(--accent-500)]':'bg-stone-100')}/>)}
       </div>
 
       {step===0&&(
@@ -2022,7 +2068,7 @@ function WeeklyReviewView({inboxCount,overdueCount,overdueTasks,goalTasks,circle
           <p className="text-sm text-stone-400 mb-4">1–3 Q2 (important, not urgent) actions you're committing to this week.</p>
           {!weekPool.length&&<p className="text-xs text-stone-300 py-3">Nothing due this week yet — that's fine, add some from Today.</p>}
           {weekPool.slice(0,25).map(t=>(
-            <button key={t.id} onClick={()=>onToggleFocus(t.id)} className={'w-full flex items-center gap-2 rounded-xl px-3 py-2 mb-1.5 text-left text-xs '+(t.weeklyFocus?'bg-emerald-50 text-emerald-700 font-bold':'bg-stone-50 text-stone-600')}>
+            <button key={t.id} onClick={()=>onToggleFocus(t.id)} className={'w-full flex items-center gap-2 rounded-xl px-3 py-2 mb-1.5 text-left text-xs '+(t.weeklyFocus?'bg-[var(--accent-50)] text-[var(--accent-700)] font-bold':'bg-stone-50 text-stone-600')}>
               <span>{t.weeklyFocus?'⭐':'☆'}</span>{t.text}
             </button>
           ))}
@@ -2033,7 +2079,7 @@ function WeeklyReviewView({inboxCount,overdueCount,overdueTasks,goalTasks,circle
           <p className="text-lg font-black text-stone-800 mb-2">Anything worth remembering?</p>
           <p className="text-sm text-stone-400 mb-3">Optional — a short note on why you prioritized what you did this week. Useful when priorities shift later and you want to remember why.</p>
           <textarea value={notes} onChange={e=>setNotes(e.target.value)} rows={4} placeholder="Notes for this week (optional)…" className="w-full px-3 py-2.5 text-sm border border-stone-200 rounded-xl bg-white focus:outline-none mb-3"/>
-          <button onClick={()=>{onFinish(notes);setNotes('');setStep(0)}} className="w-full py-3.5 bg-emerald-600 text-white rounded-2xl font-black text-sm">✓ Finish Review</button>
+          <button onClick={()=>{onFinish(notes);setNotes('');setStep(0)}} className="w-full py-3.5 bg-[var(--accent-600)] text-white rounded-2xl font-black text-sm">✓ Finish Review</button>
         </div>
       )}
 
@@ -2171,7 +2217,7 @@ function GoalsView({goals,allTasks,doneTasks,onEdit,onComplete,labels,projects,o
                 <div className="border-t border-stone-50 px-3 py-1">
                   {subGoals(g).map(sg=>(
                     <div key={sg.id} className="flex items-center gap-2 py-2 border-b border-stone-50 last:border-0" onClick={()=>onEdit(sg)}>
-                      <button onClick={ev=>{ev.stopPropagation();onComplete(sg.id)}} className={'w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center '+(sg.status==='completed'?'bg-emerald-500 border-emerald-500':'border-stone-300')}/>
+                      <button onClick={ev=>{ev.stopPropagation();onComplete(sg.id)}} className={'w-4 h-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center '+(sg.status==='completed'?'bg-[var(--accent-500)] border-[var(--accent-500)]':'border-stone-300')}/>
                       <div className="flex-1 min-w-0">
                         <p className={'text-xs font-semibold '+(sg.status==='completed'?'line-through text-stone-400':'text-stone-700')}>{sg.text}</p>
                         {sg.dueDate&&<p className={'text-[10px] '+(isOverdue(sg.dueDate)&&sg.status!=='completed'?'text-red-400':'text-stone-400')}>📅 {fmtDate(sg.dueDate)}</p>}
@@ -2183,15 +2229,15 @@ function GoalsView({goals,allTasks,doneTasks,onEdit,onComplete,labels,projects,o
               {/* Add sub-goal */}
               {addSubFor===g.id?(
                 <div className="border-t border-stone-100 p-3 bg-stone-50">
-                  <input value={subText} onChange={e=>setSubText(e.target.value)} placeholder="Sub-goal or target…" autoFocus className="w-full text-sm border border-stone-200 rounded-xl px-3 py-2 mb-2 bg-white focus:outline-none focus:border-emerald-400"/>
+                  <input value={subText} onChange={e=>setSubText(e.target.value)} placeholder="Sub-goal or target…" autoFocus className="w-full text-sm border border-stone-200 rounded-xl px-3 py-2 mb-2 bg-white focus:outline-none focus:border-[var(--accent-400)]"/>
                   <div className="flex gap-2 items-center">
                     <input type="date" value={subDate} onChange={e=>setSubDate(e.target.value)} className="flex-1 text-xs border border-stone-200 rounded-xl px-2 py-1.5 bg-white focus:outline-none"/>
-                    <button onClick={()=>handleAddSub(g)} disabled={!subText.trim()} className="px-3 py-1.5 bg-emerald-600 text-white rounded-xl text-xs font-bold disabled:opacity-40">Add</button>
+                    <button onClick={()=>handleAddSub(g)} disabled={!subText.trim()} className="px-3 py-1.5 bg-[var(--accent-600)] text-white rounded-xl text-xs font-bold disabled:opacity-40">Add</button>
                     <button onClick={()=>{setAddSubFor(null);setSubText('');setSubDate('')}} className="px-3 py-1.5 bg-stone-100 text-stone-600 rounded-xl text-xs">✕</button>
                   </div>
                 </div>
               ):(
-                <button onClick={()=>setAddSubFor(g.id)} className="w-full px-3 py-2 text-xs text-emerald-600 font-bold text-left border-t border-stone-50">+ Add sub-goal / target</button>
+                <button onClick={()=>setAddSubFor(g.id)} className="w-full px-3 py-2 text-xs text-[var(--accent-600)] font-bold text-left border-t border-stone-50">+ Add sub-goal / target</button>
               )}
             </div>
           ))}
@@ -2209,7 +2255,7 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
       <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">{tab==='completed'?'Completed':'Archive'}</h2></div>
       <div className="flex px-4 gap-4 mb-2">
         {[['completed','✅ Done',done.length],['archived','📦 Archive',arch.length]].map(([k,l,n])=>(
-          <button key={k} onClick={()=>setTab(k)} className={'text-sm font-black pb-1 border-b-2 '+(tab===k?'border-emerald-500 text-emerald-700':'border-transparent text-stone-400')}>
+          <button key={k} onClick={()=>setTab(k)} className={'text-sm font-black pb-1 border-b-2 '+(tab===k?'border-[var(--accent-500)] text-[var(--accent-700)]':'border-transparent text-stone-400')}>
             {l} <span className="font-normal text-xs opacity-60">({n})</span>
           </button>
         ))}
@@ -2218,7 +2264,7 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
         {!done.length&&<div className="text-center py-12"><div style={{fontSize:44}}>🏆</div><p className="text-sm font-bold text-stone-500 mt-2">Nothing completed yet</p></div>}
         {done.map(t=>(
           <div key={t.id} className="bg-white flex items-center gap-3 px-4 py-3 active:bg-stone-50">
-            <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-emerald-500 border-2 border-emerald-500 flex-shrink-0 flex items-center justify-center">
+            <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-[var(--accent-500)] border-2 border-[var(--accent-500)] flex-shrink-0 flex items-center justify-center">
               <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
             </button>
             <div className="flex-1 min-w-0"><p className="text-sm line-through text-stone-400 truncate">{t.text}</p><p className="text-[10px] text-stone-300">{t.completedAt?new Date(t.completedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):''}</p></div>
@@ -2232,7 +2278,7 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
           <div key={t.id} className="bg-white flex items-center gap-3 px-4 py-3 opacity-60 active:bg-stone-50">
             <span style={{fontSize:18}}>📦</span>
             <div className="flex-1 min-w-0"><p className="text-sm text-stone-500 truncate">{t.text}</p>{t.autoArchived&&<p className="text-[10px] text-violet-400">Auto-archived</p>}</div>
-            <button onClick={()=>onRestore(t.id)} className="text-emerald-400 text-lg mr-2 active:text-emerald-600">↩</button>
+            <button onClick={()=>onRestore(t.id)} className="text-[var(--accent-400)] text-lg mr-2 active:text-[var(--accent-600)]">↩</button>
             <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400">×</button>
           </div>
         ))}
@@ -2286,7 +2332,7 @@ function DateTimePicker({initDate,initTime,initRecur,taskDates,onSave,onClose,sh
       <div className="flex items-center justify-between px-3 pt-4 pb-3 flex-shrink-0 border-b border-stone-100">
         <button onClick={onClose} className="text-stone-400 text-2xl font-bold px-2">‹</button>
         <span className="text-base font-black text-stone-900">Date</span>
-        <button onClick={save} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white flex-shrink-0 mr-1">
+        <button onClick={save} className="w-9 h-9 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white flex-shrink-0 mr-1">
           <svg width="16" height="12" viewBox="0 0 16 12" fill="none"><path d="M1 6L5.5 10.5L15 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </button>
       </div>
@@ -2297,7 +2343,7 @@ function DateTimePicker({initDate,initTime,initRecur,taskDates,onSave,onClose,sh
       </div>
       <div className="flex-shrink-0">
         {quickOpts.map(o=>(
-          <button key={o.l} onClick={()=>setSelDate(o.v)} className={'w-full flex items-center justify-between px-4 py-3 border-b border-stone-50 '+(selDate===o.v?'bg-emerald-50':'')}>
+          <button key={o.l} onClick={()=>setSelDate(o.v)} className={'w-full flex items-center justify-between px-4 py-3 border-b border-stone-50 '+(selDate===o.v?'bg-[var(--accent-50)]':'')}>
             <span className="flex items-center gap-3 text-sm font-semibold text-stone-700">{o.ico} {o.l}</span>
             <span className="text-xs text-stone-400">{o.sub}</span>
           </button>
@@ -2418,7 +2464,7 @@ function TimePicker({initial,onSave,onClose}){
       </div>
       <div className="flex justify-end gap-3 px-5 py-4 border-t border-stone-100 flex-shrink-0">
         <button onClick={onClose} className="text-sm font-bold text-stone-400 px-4 py-2">Cancel</button>
-        <button onClick={save} className="text-sm font-black text-emerald-600 px-4 py-2">Okay</button>
+        <button onClick={save} className="text-sm font-black text-[var(--accent-600)] px-4 py-2">Okay</button>
       </div>
     </div>
   );
@@ -2503,11 +2549,11 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,
         <div className="flex items-center justify-between mb-3">
           <button onClick={onClose} className="text-stone-400 text-2xl font-bold px-1">‹</button>
           <p className="text-xs font-black text-stone-400 uppercase tracking-widest">Quick Add{ctxProject&&<span className="text-indigo-500 ml-2">→ {ctxProject.name}{ctxSection?' / '+ctxSection.name:''}</span>}</p>
-          <button onClick={handleAdd} disabled={!text.trim()} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white disabled:opacity-30 flex-shrink-0">
+          <button onClick={handleAdd} disabled={!text.trim()} className="w-9 h-9 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white disabled:opacity-30 flex-shrink-0">
             <svg width="16" height="12" viewBox="0 0 16 12" fill="none"><path d="M1 6L5.5 10.5L15 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
         </div>
-        <input ref={ref} value={text} onChange={e=>handleChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdd()} placeholder="Task name… tomorrow @Project #label p1" className="w-full text-base text-stone-900 bg-transparent border-b-2 border-stone-200 focus:border-emerald-500 focus:outline-none pb-2 mb-3 transition-colors"/>
+        <input ref={ref} value={text} onChange={e=>handleChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleAdd()} placeholder="Task name… tomorrow @Project #label p1" className="w-full text-base text-stone-900 bg-transparent border-b-2 border-stone-200 focus:border-[var(--accent-500)] focus:outline-none pb-2 mb-3 transition-colors"/>
         {suggs.length>0&&suggMode==='tag'&&(
           <div className="flex gap-1.5 flex-wrap mb-3 p-2 bg-amber-50 rounded-xl border border-amber-200">
             <span className="text-[10px] text-amber-600 w-full font-semibold">💡 Tap to complete tag:</span>
@@ -2528,7 +2574,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,
         )}
         {/* Minimal pill row — Todoist-style manual pickers, alongside natural-language typing */}
         <div className="flex gap-2 flex-wrap mb-3">
-          <button onClick={()=>setShowDatePick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(dispDate?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-white text-stone-500 border-stone-200')}>📅 {dispDate?fmtDate(dispDate)+(dispTime?' '+fmtTime(dispTime):''):'Date'}</button>
+          <button onClick={()=>setShowDatePick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(dispDate?'bg-[var(--accent-50)] text-[var(--accent-700)] border-[var(--accent-200)]':'bg-white text-stone-500 border-stone-200')}>📅 {dispDate?fmtDate(dispDate)+(dispTime?' '+fmtTime(dispTime):''):'Date'}</button>
           <button onClick={()=>setShowPriPick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(dispPri?'bg-white border-stone-200':'bg-white text-stone-500 border-stone-200')} style={dispPri?{color:PRI_COLOR[dispPri]}:{}}>🚩 {dispPri||'Priority'}</button>
           <button onClick={()=>setShowLblPick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(dispLbls.length?'bg-stone-100 text-stone-700 border-stone-200':'bg-white text-stone-500 border-stone-200')}>🏷️ {dispLbls.length?dispLbls.map(l=>'#'+l).join(' '):'Labels'}</button>
         </div>
@@ -2536,7 +2582,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,
         {hasMeta&&(
           <div className="flex flex-wrap gap-2 mb-3 p-3 bg-stone-50 rounded-xl">
             {ctxProject&&!parsed.project&&<span className="text-xs font-semibold px-2 py-1 rounded-lg text-white" style={{background:ctxProject.color||'#6366f1'}}>📁 {ctxProject.name}</span>}
-            {dispDate&&<span className={'text-xs font-semibold px-2 py-1 rounded-lg '+(dispDate===todayISO()?'bg-emerald-100 text-emerald-700':isOverdue(dispDate)?'bg-red-100 text-red-600':'bg-stone-200 text-stone-600')}>📅 {fmtDate(dispDate)}{dispTime?' '+fmtTime(dispTime):''}</span>}
+            {dispDate&&<span className={'text-xs font-semibold px-2 py-1 rounded-lg '+(dispDate===todayISO()?'bg-[var(--accent-100)] text-[var(--accent-700)]':isOverdue(dispDate)?'bg-red-100 text-red-600':'bg-stone-200 text-stone-600')}>📅 {fmtDate(dispDate)}{dispTime?' '+fmtTime(dispTime):''}</span>}
             {dispPri&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-stone-200 text-stone-700" style={{color:PRI_COLOR[dispPri]}}>● {dispPri}</span>}
             {parsed.project&&<span className="text-xs font-semibold px-2 py-1 rounded-lg text-white" style={{background:projects.find(p=>p.name===parsed.project)?.color||'#6366f1'}}>📁 {parsed.project}</span>}
             {parsed.sectionName&&<span className="text-xs font-semibold px-2 py-1 rounded-lg bg-violet-100 text-violet-700">📂 {parsed.sectionName}</span>}
@@ -2575,7 +2621,7 @@ function QuickAdd({onAdd,onClose,projects,labels,ctxProject,ctxSection,sections,
 }
 
 /* ── Task Modal (full edit) ──────────────────────────── */
-function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddLbl,onAddPrj,sections,onAddChildTask,onCompleteChild,onOutdentChild,onDelChild}){
+function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,onArch,onAddPrj,sections,onAddChildTask,onCompleteChild,onOutdentChild,onDelChild}){
   const [t,setT]=useState({...task,subtasks:task.subtasks||[],goalType:task.goalType||null,notes:task.notes||'',sectionId:task.sectionId||null,comments:task.comments||[]});
   const [newLbl,setNewLbl]=useState('');const [newSub,setNewSub]=useState('');const [newComment,setNewComment]=useState('');
   const [showDatePick,setShowDatePick]=useState(false);
@@ -2584,7 +2630,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
   const addComment=()=>{if(!newComment.trim())return;s('comments',[...(t.comments||[]),{id:uid(),text:newComment.trim(),createdAt:new Date().toISOString()}]);setNewComment('')};
   const setProject=name=>{const np=t.project===name?null:name;setT(p=>({...p,project:np,sectionId:np!==p.project?null:p.sectionId}))};
   const qd=[{l:'Today',v:todayISO()},{l:'Tomorrow',v:addDays(1)},{l:'This Week',v:addDays(6)},{l:'Next Month',v:addDays(30)},{l:'Clear',v:null}];
-  const addL=()=>{const l=newLbl.trim();if(!l||labels.includes(l))return;onAddLbl(l);s('labels',[...(t.labels||[]),l]);setNewLbl('')};
+  const addL=()=>{const l=newLbl.trim();if(!l||(t.labels||[]).includes(l))return;s('labels',[...(t.labels||[]),l]);setNewLbl('')};
   const children=(allTasks||[]).filter(x=>x.parentId===task.id&&x.status!=='archived');
   const related=t.labels&&t.labels.length?allTasks.filter(r=>r.id!==t.id&&!['archived','completed'].includes(r.status)&&(r.labels||[]).some(l=>(t.labels||[]).includes(l))).slice(0,4):[];
   const prj=t.project?projects.find(p=>p.name===t.project||p.id===t.project):null;
@@ -2601,7 +2647,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
             <span className="w-3.5 h-3.5 rounded-full border-2" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
             {prj?('📁 '+prj.name):'📥 Inbox'}
           </span>
-          <button onClick={()=>onSave(t)} className="w-9 h-9 rounded-full bg-emerald-600 flex items-center justify-center text-white flex-shrink-0">
+          <button onClick={()=>onSave(t)} className="w-9 h-9 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white flex-shrink-0">
             <svg width="16" height="12" viewBox="0 0 16 12" fill="none"><path d="M1 6L5.5 10.5L15 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           </button>
         </div>
@@ -2614,7 +2660,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
             <div>
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Details</p>
               <div className="flex flex-wrap gap-2">
-                <button onClick={()=>setShowDatePick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.dueDate?'bg-emerald-50 text-emerald-700 border-emerald-200':'bg-white text-stone-500 border-stone-200')}>📅 {t.dueDate?fmtDate(t.dueDate)+(t.dueTime?' '+fmtTime(t.dueTime):''):'Date'}</button>
+                <button onClick={()=>setShowDatePick(true)} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.dueDate?'bg-[var(--accent-50)] text-[var(--accent-700)] border-[var(--accent-200)]':'bg-white text-stone-500 border-stone-200')}>📅 {t.dueDate?fmtDate(t.dueDate)+(t.dueTime?' '+fmtTime(t.dueTime):''):'Date'}</button>
                 <button onClick={()=>setSheet('priority')} className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border bg-white border-stone-200" style={{color:t.priority?PRI_COLOR[t.priority]:'#78716c'}}>🚩 {t.priority||'Priority'}</button>
                 <button onClick={()=>setSheet('project')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.project?'text-white border-transparent':'bg-white text-stone-500 border-stone-200')} style={t.project&&prj?{background:prj.color}:{}}>📁 {t.project||'Inbox'}</button>
                 {prj&&prjSections.length>0&&<button onClick={()=>setSheet('section')} className={'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold border '+(t.sectionId?'bg-violet-50 text-violet-700 border-violet-200':'bg-white text-stone-500 border-stone-200')}>📂 {t.sectionId?(prjSections.find(sc=>sc.id===t.sectionId)?.name||'Section'):'Section'}</button>}
@@ -2631,7 +2677,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
               <p className="text-[11px] font-black text-stone-400 uppercase tracking-widest mb-2">Sub-tasks ({children.length})</p>
               {children.map(c=>(
                 <div key={c.id} className="flex items-center gap-2 py-1.5 border-b border-stone-100">
-                  <button onClick={()=>onCompleteChild&&onCompleteChild(c.id)} className={'w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center '+(c.status==='completed'?'bg-emerald-500 border-emerald-500':'border-stone-300')}>
+                  <button onClick={()=>onCompleteChild&&onCompleteChild(c.id)} className={'w-4 h-4 rounded-full border flex-shrink-0 flex items-center justify-center '+(c.status==='completed'?'bg-[var(--accent-500)] border-[var(--accent-500)]':'border-stone-300')}>
                     {c.status==='completed'&&<svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
                   </button>
                   <span className={'flex-1 text-xs '+(c.status==='completed'?'line-through text-stone-400':'text-stone-700')}>{c.text}</span>
@@ -2667,7 +2713,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
               </div>
             )}
           </div>
-          {gcalOk&&t.dueDate&&<p className="text-xs text-center mt-4 text-emerald-600">{t.calendarEventId?'📆 Synced with Calendar':'📆 Will sync to Calendar on save'}</p>}
+          {gcalOk&&t.dueDate&&<p className="text-xs text-center mt-4 text-[var(--accent-600)]">{t.calendarEventId?'📆 Synced with Calendar':'📆 Will sync to Calendar on save'}</p>}
           {/* Secondary actions — Save lives at the top now (✓) */}
           <div className="flex gap-2 mt-5">
             <button onClick={onArch} className="flex-1 py-3 bg-stone-100 text-stone-600 rounded-2xl text-xs font-bold">📦 Archive</button>
@@ -2714,7 +2760,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
               </div>
               <div className="flex gap-2">
                 <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addL()} placeholder="Add label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
-                <button onClick={addL} className="px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-black">Add</button>
+                <button onClick={addL} className="px-3 py-2 bg-[var(--accent-50)] text-[var(--accent-700)] border border-[var(--accent-200)] rounded-xl text-xs font-black">Add</button>
               </div>
             </React.Fragment>)}
             {sheet==='deadline'&&(<React.Fragment>
@@ -2752,9 +2798,8 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
     </div>
   );
 }
-function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRetryDrive,onSync,syncing,labels,onSaveLbls,projects,onSavePrjs,taskCount,tasks,onExport,onImport}){
+function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRetryDrive,onSync,syncing,labels,onRemoveLabel,projects,onSavePrjs,taskCount,tasks,onExport,onImport,theme,setTheme}){
   const [inp,setInp]=useState(cid);
-  const [newLbl,setNewLbl]=useState('');
   const [newPrjName,setNewPrjName]=useState('');
   const [newPrjColor,setNewPrjColor]=useState(PC[0]);
   const [newPrjParent,setNewPrjParent]=useState(null);
@@ -2773,7 +2818,7 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
         <p className="px-4 pt-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Google Sync</p>
         <div className="px-4 pb-4">
           <div className="flex items-center gap-3 mb-3">
-            <span className={'text-xs font-bold px-2 py-1 rounded-full '+(driveOk?'bg-emerald-100 text-emerald-700':connected?'bg-red-100 text-red-700':'bg-stone-100 text-stone-500')}>{driveOk?'✓ Connected':connected?'⚠️ Drive failing':'Not connected'}</span>
+            <span className={'text-xs font-bold px-2 py-1 rounded-full '+(driveOk?'bg-[var(--accent-100)] text-[var(--accent-700)]':connected?'bg-red-100 text-red-700':'bg-stone-100 text-stone-500')}>{driveOk?'✓ Connected':connected?'⚠️ Drive failing':'Not connected'}</span>
             {driveOk&&<span className="text-xs text-stone-400">Drive + Calendar active</span>}
           </div>
           {!cid&&<React.Fragment>
@@ -2789,7 +2834,7 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
           </React.Fragment>}
           {cid&&!connected&&isHttps&&<React.Fragment>
             <p className="text-xs text-stone-400 mb-2">Your Google session expired — this is just a one-tap reconnect, not a re-setup.</p>
-            <button onClick={onConnect} className="w-full py-3 bg-emerald-600 text-white rounded-xl text-xs font-black mb-2">🔐 Reconnect Google</button>
+            <button onClick={onConnect} className="w-full py-3 bg-[var(--accent-600)] text-white rounded-xl text-xs font-black mb-2">🔐 Reconnect Google</button>
             <button onClick={()=>setCid('')} className="w-full py-2 text-[11px] text-stone-300 font-semibold">Use a different Client ID</button>
           </React.Fragment>}
           {connected&&!driveOk&&(
@@ -2825,7 +2870,7 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
               {validParents.map(p=><Chip key={p.id} on={editPrjParent===p.id} click={()=>setEditPrjParent(p.id)}>{'  '.repeat(p.depth)}{p.depth>0?'↳ ':''}{p.name}</Chip>)}
             </div>
             <div className="flex gap-2">
-              <button onClick={()=>{onSavePrjs(projects.map(p=>p.id===editPrj.id?{...p,name:editPrjName.trim()||p.name,color:editPrjColor,parentId:editPrjParent}:p));setEditPrj(null)}} className="flex-1 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold">Save</button>
+              <button onClick={()=>{onSavePrjs(projects.map(p=>p.id===editPrj.id?{...p,name:editPrjName.trim()||p.name,color:editPrjColor,parentId:editPrjParent}:p));setEditPrj(null)}} className="flex-1 py-2 bg-[var(--accent-600)] text-white rounded-xl text-xs font-bold">Save</button>
               <button onClick={()=>setEditPrj(null)} className="px-4 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs">Cancel</button>
             </div>
           </div>
@@ -2855,15 +2900,27 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
           <button onClick={()=>{if(newPrjName.trim()){onSavePrjs([...projects,{id:uid(),name:newPrjName.trim(),color:newPrjColor,parentId:newPrjParent}]);setNewPrjName('');setNewPrjParent(null)}}} disabled={!newPrjName.trim()} className="w-full py-2.5 bg-stone-800 text-white rounded-xl text-xs font-black disabled:opacity-40">Add Project</button>
         </div>
       </div>
-      {/* Labels */}
+      {/* Labels — derived from active tasks, not a separate list to maintain */}
       <div className="bg-white mx-0 mb-4 border-y border-stone-100">
-        <p className="px-4 pt-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Labels</p>
-        <div className="flex flex-wrap gap-2 px-4 pb-3">
-          {labels.map(l=><div key={l} className="flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-full pl-3 pr-1.5 py-1"><span className="text-xs font-semibold text-stone-600"># {l}</span><button onClick={()=>onSaveLbls(labels.filter(x=>x!==l))} className="text-stone-300 w-4 h-4 flex items-center justify-center" style={{fontSize:12}}>×</button></div>)}
+        <p className="px-4 pt-4 pb-1 text-xs font-black text-stone-400 uppercase tracking-widest">Labels</p>
+        <p className="px-4 pb-2 text-[11px] text-stone-400">Created automatically when you use #label on a task. Removing one here strips it from every task.</p>
+        <div className="flex flex-wrap gap-2 px-4 pb-4">
+          {labels.map(l=><div key={l} className="flex items-center gap-1 bg-stone-50 border border-stone-200 rounded-full pl-3 pr-1.5 py-1"><span className="text-xs font-semibold text-stone-600"># {l}</span><button onClick={()=>onRemoveLabel(l)} className="text-stone-300 w-4 h-4 flex items-center justify-center" style={{fontSize:12}}>×</button></div>)}
+          {!labels.length&&<p className="text-xs text-stone-300">No labels in use yet</p>}
         </div>
-        <div className="flex gap-2 px-4 pb-4">
-          <input value={newLbl} onChange={e=>setNewLbl(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'&&newLbl.trim()){onSaveLbls([...labels,newLbl.trim()]);setNewLbl('')}}} placeholder="Add label…" className="flex-1 px-3 py-2 text-xs border border-stone-200 rounded-xl focus:outline-none bg-stone-50"/>
-          <button onClick={()=>{if(newLbl.trim()){onSaveLbls([...labels,newLbl.trim()]);setNewLbl('')}}} className="px-4 py-2 bg-stone-800 text-white rounded-xl text-xs font-black">Add</button>
+      </div>
+      {/* Theme */}
+      <div className="bg-white mx-0 mb-4 border-y border-stone-100">
+        <p className="px-4 pt-4 pb-2 text-xs font-black text-stone-400 uppercase tracking-widest">Theme</p>
+        <div className="flex flex-wrap gap-3 px-4 pb-4">
+          {Object.entries(THEME_PRESETS).map(([key,p])=>(
+            <button key={key} onClick={()=>setTheme(key)} className="flex flex-col items-center gap-1">
+              <span className="w-9 h-9 rounded-full flex items-center justify-center" style={{background:p.swatch,boxShadow:theme===key?'0 0 0 3px white, 0 0 0 5px '+p.swatch:'none'}}>
+                {theme===key&&<svg width="14" height="11" viewBox="0 0 14 11" fill="none"><path d="M1 5.5L5 9.5L13 1" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              </span>
+              <span className="text-[10px] font-semibold text-stone-500">{p.label}</span>
+            </button>
+          ))}
         </div>
       </div>
       {/* Backup / Restore */}
@@ -2896,7 +2953,7 @@ function LblPicker({labels,onConfirm,onClose}){
     <React.Fragment>
       <div className="flex flex-wrap gap-2 mb-4">{labels.map(l=><Chip key={l} on={sel.includes(l)} click={()=>tog(l)}># {l}</Chip>)}</div>
       <div className="flex gap-2">
-        <button onClick={()=>onConfirm(sel)} disabled={!sel.length} className="flex-1 py-3 bg-emerald-600 text-white rounded-xl font-bold text-sm disabled:opacity-40">Apply {sel.length} label{sel.length!==1?'s':''}</button>
+        <button onClick={()=>onConfirm(sel)} disabled={!sel.length} className="flex-1 py-3 bg-[var(--accent-600)] text-white rounded-xl font-bold text-sm disabled:opacity-40">Apply {sel.length} label{sel.length!==1?'s':''}</button>
         <button onClick={onClose} className="px-4 py-3 bg-stone-100 text-stone-600 rounded-xl text-sm">Cancel</button>
       </div>
     </React.Fragment>
@@ -2911,7 +2968,7 @@ function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,in
   const prjCount=p=>tasks.filter(t=>t.project===p.name||t.project===p.id).length;
   const favProjects=(favorites||[]).filter(f=>f.type==='project').map(f=>projects.find(p=>(p.id||p.name)===f.id)).filter(Boolean);
   const item=(k,ico,label,n,extra={})=>(
-    <button key={k} onClick={()=>nav(k,extra)} className={'w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold '+(view.tab===k&&(!extra.prjId||view.prjId===extra.prjId)?'bg-emerald-50 text-emerald-700':'text-stone-600 hover:bg-stone-100')}>
+    <button key={k} onClick={()=>nav(k,extra)} className={'w-full flex items-center gap-3 px-3 py-2 rounded-xl text-sm font-semibold '+(view.tab===k&&(!extra.prjId||view.prjId===extra.prjId)?'bg-[var(--accent-50)] text-[var(--accent-700)]':'text-stone-600 hover:bg-stone-100')}>
       <span style={{fontSize:15}}>{ico}</span><span className="flex-1 text-left truncate">{label}</span>
       {n>0&&<span className="text-[10px] text-stone-400 font-bold">{n}</span>}
     </button>
@@ -2919,10 +2976,10 @@ function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,in
   return(
     <div className="hidden md:flex flex-col w-64 flex-shrink-0 bg-white border-r border-stone-100 h-full overflow-y-auto px-3 py-4">
       <div className="flex items-center gap-2 px-2 mb-4">
-        <div className="w-8 h-8 rounded-full bg-emerald-600 flex items-center justify-center text-white font-black text-sm flex-shrink-0">J</div>
+        <div className="w-8 h-8 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white font-black text-sm flex-shrink-0">J</div>
         <span className="text-sm font-black text-stone-800 truncate">Jayesh</span>
       </div>
-      <button onClick={onAddTask} className="w-full flex items-center gap-2 px-3 py-2.5 mb-3 bg-emerald-600 text-white rounded-xl text-sm font-bold shadow-sm active:bg-emerald-700">
+      <button onClick={onAddTask} className="w-full flex items-center gap-2 px-3 py-2.5 mb-3 bg-[var(--accent-600)] text-white rounded-xl text-sm font-bold shadow-sm active:bg-[var(--accent-700)]">
         <span className="text-lg leading-none">＋</span> Add task
       </button>
       <div className="space-y-0.5 mb-3">
@@ -2950,7 +3007,7 @@ function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,in
           <span>My Projects</span><span>{showPrjs?'▾':'▸'}</span>
         </button>
         {showPrjs&&tree.map(p=>(
-          <button key={p.id} onClick={()=>nav('project',{prjId:p.id||p.name})} className={'w-full flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold '+(view.tab==='project'&&view.prjId===(p.id||p.name)?'bg-emerald-50 text-emerald-700':'text-stone-600 hover:bg-stone-100')} style={{paddingLeft:12+p.depth*14}}>
+          <button key={p.id} onClick={()=>nav('project',{prjId:p.id||p.name})} className={'w-full flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm font-semibold '+(view.tab==='project'&&view.prjId===(p.id||p.name)?'bg-[var(--accent-50)] text-[var(--accent-700)]':'text-stone-600 hover:bg-stone-100')} style={{paddingLeft:12+p.depth*14}}>
             <span style={{color:p.color||'#6366f1'}}>#</span><span className="flex-1 text-left truncate">{p.name}</span>
             <span className="text-[10px] text-stone-400 font-bold">{prjCount(p)}</span>
           </button>
@@ -2964,7 +3021,7 @@ function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,in
 }
 
 /* ── Tiny helpers ────────────────────────────────────── */
-function Chip({on,click,children}){return<button onClick={click} className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-emerald-600 text-white border-emerald-600':'bg-white text-stone-600 border-stone-200')}>{children}</button>}
+function Chip({on,click,children}){return<button onClick={click} className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-[var(--accent-600)] text-white border-[var(--accent-600)]':'bg-white text-stone-600 border-stone-200')}>{children}</button>}
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
 </script>
