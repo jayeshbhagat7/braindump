@@ -9,11 +9,43 @@
   <meta name="apple-mobile-web-app-title" content="Brain Dump"/>
   <meta name="theme-color" content="#16a34a"/>
   <link rel="manifest" href="manifest.json"/>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script>
+    // ── Diagnostics: mobile browsers give no console, so surface any failure on-screen ──
+    window.__bdErrors = [];
+    window.addEventListener('error', function(e){
+      var detail = (e.error && (e.error.stack || e.error.message)) || e.message || 'Unknown error';
+      window.__bdErrors.push(detail + (e.filename ? ' ('+e.filename.split('/').pop()+':'+e.lineno+':'+e.colno+')' : ''));
+    }, true);
+    window.addEventListener('unhandledrejection', function(e){
+      window.__bdErrors.push('Promise rejection: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+    });
+    function bdShowDiagnostics(){
+      var root = document.getElementById('root');
+      if (!root || root.children.length > 0) return; // app rendered fine, nothing to do
+      var libs = [
+        ['Tailwind', typeof window.tailwind !== 'undefined'],
+        ['React', typeof window.React !== 'undefined'],
+        ['ReactDOM', typeof window.ReactDOM !== 'undefined'],
+        ['Babel', typeof window.Babel !== 'undefined']
+      ];
+      var html = '<div style="font-family:system-ui,sans-serif;padding:20px;color:#333;line-height:1.5">'
+        + '<h2 style="color:#b91c1c;margin:0 0 10px">Brain Dump failed to load</h2>'
+        + '<p style="font-size:14px">This usually means your network blocked one of the required scripts (common on some mobile/office networks). Status:</p>'
+        + '<ul style="font-size:14px">' + libs.map(function(l){return '<li>'+l[0]+': '+(l[1]?'✅ loaded':'❌ NOT loaded')+'</li>';}).join('') + '</ul>';
+      if (window.__bdErrors.length) {
+        html += '<p style="font-size:14px;margin-top:10px"><b>Errors captured:</b></p><ul style="font-size:13px;color:#b91c1c">'
+          + window.__bdErrors.map(function(m){return '<li>'+m.replace(/</g,'&lt;')+'</li>';}).join('') + '</ul>';
+      }
+      html += '<p style="font-size:13px;color:#666;margin-top:14px">Try: switching from WiFi to mobile data (or vice versa), disabling any VPN/ad-blocker, or opening in Chrome instead of an in-app browser.</p></div>';
+      root.innerHTML = html;
+    }
+    window.addEventListener('load', function(){ setTimeout(bdShowDiagnostics, 4000); });
+  </script>
+  <script src="https://cdn.tailwindcss.com" crossorigin="anonymous" onerror="window.__bdErrors.push('Tailwind CDN failed to load')"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin="anonymous" onerror="window.__bdErrors.push('React CDN failed to load')"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin="anonymous" onerror="window.__bdErrors.push('ReactDOM CDN failed to load')"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin="anonymous" onerror="window.__bdErrors.push('Babel CDN failed to load')"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer onerror="window.__bdErrors.push('Google Identity script failed to load (Calendar/Drive sync will be unavailable, but app should still work)')"></script>
   <style>
     *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
     html,body{height:100%;margin:0;padding:0;background:#F7F7F5;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}
@@ -615,15 +647,20 @@ function App(){
   // Enter select mode via long-press on a task row (replaces separate "Select" button)
   const startSelect=id=>{setSelectMode(true);setSelected([id])};
 
+  // Labels are derived from what's actually assigned to active tasks — no separate "master list" to
+  // maintain. A label exists exactly as long as some non-completed, non-archived task uses it, and
+  // disappears from suggestions/filters the moment the last task using it is finished or deleted.
+  // NOTE: this must be computed before the `ready` early-return below, otherwise this hook is skipped
+  // on the loading render and runs on the next one — React then sees a different number of hooks
+  // between renders and throws "Rendered more hooks than during the previous render" (error #310).
+  const activeForLabels=tasks.filter(t=>t.status!=='archived'&&t.status!=='completed');
+  const usedLabels=useMemo(()=>Array.from(new Set(activeForLabels.flatMap(t=>t.labels||[]))).sort((a,b)=>a.localeCompare(b)),[activeForLabels]);
+
   if(!ready)return<div style={{height:'100vh',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column',gap:12,color:'#a8a29e'}}><span style={{fontSize:56}}>🧠</span><span style={{fontSize:14,fontWeight:600}}>Loading…</span></div>;
 
   // Computed — prjById must come first, others depend on it
   const prjById=id=>projects.find(p=>p.id===id)||projects.find(p=>p.name===id);
   const active=tasks.filter(t=>t.status!=='archived'&&t.status!=='completed');
-  // Labels are derived from what's actually assigned to active tasks — no separate "master list" to
-  // maintain. A label exists exactly as long as some non-completed, non-archived task uses it, and
-  // disappears from suggestions/filters the moment the last task using it is finished or deleted.
-  const usedLabels=useMemo(()=>Array.from(new Set(active.flatMap(t=>t.labels||[]))).sort((a,b)=>a.localeCompare(b)),[active]);
   const removeLabelEverywhere=name=>{
     const affected=tasks.filter(t=>(t.labels||[]).includes(name));
     if(!affected.length)return;
@@ -1430,15 +1467,15 @@ function WebView({tasks,labels,projects,onEdit,onComplete}){
 
 /* ── Project View ────────────────────────────────────── */
 function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onNav,labels,projects,selectMode,selected,onSelect,onLongPress,sections,onSaveSections,onAddTask,onQuickMoveSection,onOpenQuickAdd}){
-  if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
-  const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
-  const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
+  // All hooks must run unconditionally on every render — the "project not found" check
+  // (see below) used to sit above these and could skip them, causing React error #310
+  // ("Rendered more hooks than during the previous render") if prj ever went undefined
+  // on a re-render (e.g. mid-sync) after having been defined on a prior render.
   const rowDrag=useRowDrag(onReparent);
   const exp=useExpandState();
-  const nestSeen=new Set(); // shared across every section's renderNested call this render — belt-and-suspenders against the same task rendering twice across sections
   const [showDone,setShowDone]=useState(false);
-  const [viewMode,setViewModeRaw]=useState(()=>ls.get('viewMode_'+prj.id,'list')); // 'list' | 'kanban' — remembered per project, survives reload
-  const setViewMode=m=>{setViewModeRaw(m);ls.set('viewMode_'+prj.id,m)};
+  const [viewMode,setViewModeRaw]=useState(()=>ls.get('viewMode_'+(prj&&prj.id),'list')); // 'list' | 'kanban' — remembered per project, survives reload
+  const setViewMode=m=>{setViewModeRaw(m);prj&&ls.set('viewMode_'+prj.id,m)};
   const [addingSection,setAddingSection]=useState(false);
   const [newSecName,setNewSecName]=useState('');
   const [secMenu,setSecMenu]=useState(null);
@@ -1450,6 +1487,11 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
   const dragInfo=useRef({active:false,taskId:null,startX:0,startY:0,moved:false,text:'',fromCol:null});
   const kanbanScrollRef=useRef(null);
   const autoScrollTimer=useRef(null);
+
+  if(!prj)return<div className="p-8 text-center text-stone-400">Project not found</div>;
+  const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
+  const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
+  const nestSeen=new Set(); // shared across every section's renderNested call this render — belt-and-suspenders against the same task rendering twice across sections
   const onCardDown=(e,task,fromCol)=>{
     const pt=e.touches?e.touches[0]:e;
     dragInfo.current={active:true,taskId:task.id,startX:pt.clientX,startY:pt.clientY,moved:false,text:task.text,fromCol};
@@ -3023,7 +3065,12 @@ function Sidebar({view,nav,projects,labels,tasks,favorites,onToggleFav,todayN,in
 /* ── Tiny helpers ────────────────────────────────────── */
 function Chip({on,click,children}){return<button onClick={click} className={'px-3 py-2 rounded-xl text-xs font-bold border flex-shrink-0 '+(on?'bg-[var(--accent-600)] text-white border-[var(--accent-600)]':'bg-white text-stone-600 border-stone-200')}>{children}</button>}
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+try{
+  ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+}catch(e){
+  window.__bdErrors.push('Render error: '+e.message);
+  bdShowDiagnostics();
+}
 </script>
 <script>
 if('serviceWorker' in navigator){window.addEventListener('load',function(){navigator.serviceWorker.register('./sw.js').catch(function(){})});}
