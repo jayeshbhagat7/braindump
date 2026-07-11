@@ -257,6 +257,7 @@ const collectWithDescendants=(ids,pool)=>{
 // so a task and its subtasks always render together, indented, regardless of the view's own filter.
 const buildNested=(topLevelFiltered,pool,sharedSeen,expandedIds)=>{
   const rows=[];const seen=sharedSeen||new Set();
+  const inThisView=new Set(topLevelFiltered.map(t=>t.id));
   const walk=(t,depth,orphanParent)=>{
     if(seen.has(t.id))return;seen.add(t.id);
     const kids=childrenOf(t.id,pool);
@@ -265,10 +266,12 @@ const buildNested=(topLevelFiltered,pool,sharedSeen,expandedIds)=>{
     if(kids.length&&expandedIds&&expandedIds.has(t.id))kids.forEach(c=>walk(c,depth+1,null));
   };
   topLevelFiltered.filter(t=>!t.parentId).forEach(t=>walk(t,0,null));
-  // A subtask whose parent doesn't happen to match this view's own filter (e.g. parent moved to a
-  // different project, or has a different due date) would otherwise vanish entirely, or show with no
-  // context — surface it plainly, tagged with its parent's name so it's never confusing.
-  topLevelFiltered.filter(t=>t.parentId&&!seen.has(t.id)).forEach(t=>{
+  // A subtask whose parent doesn't happen to be part of this view at all (e.g. parent moved to a
+  // different project) would otherwise vanish entirely, or show with no context — surface it plainly,
+  // tagged with its parent's name. But if the parent IS in this view and simply collapsed, the subtask
+  // must stay hidden — that's what collapsing means; it's still reachable via the parent's "N sub-tasks
+  // (show)" toggle. Rendering it again here as a stray "orphan" duplicated the same information twice.
+  topLevelFiltered.filter(t=>t.parentId&&!seen.has(t.id)&&!inThisView.has(t.parentId)).forEach(t=>{
     const parent=pool.find(p=>p.id===t.parentId);
     walk(t,0,parent||null);
   });
@@ -284,7 +287,7 @@ const renderNested=(list,pool,p)=>{
       isExpanded={p.expandedIds&&p.expandedIds.has(task.id)} onToggleExpand={p.onToggleExpand}
       onComplete={p.onComplete} onEdit={p.onEdit} projects={p.projects} showProject={p.showProject} showCreated={p.showCreated}
       selectMode={p.selectMode} isSelected={p.selected&&p.selected.includes(task.id)} onSelect={p.onSelect} onLongPress={p.onLongPress}
-      dragId={p.dragId} hoverId={p.hoverId} onRowDown={p.onRowDown} onRowMove={p.onRowMove} onRowUp={p.onRowUp}/>
+      dragId={p.dragId} hoverId={p.hoverId} hoverPos={p.hoverPos} onRowDown={p.onRowDown} onRowMove={p.onRowMove} onRowUp={p.onRowUp}/>
   ));
 };
 // Sort utility for list views — 'manual' keeps the given order (or reverses it)
@@ -562,14 +565,34 @@ function App(){
     pushUndo('🧭 Moved '+expanded.length+' task'+(expanded.length!==1?'s':'')+' to "'+EISEN_OPT[quad]+'"'+(expanded.length>ids.length?' (incl. sub-tasks)':''),tasks);
     persist(tasks.map(t=>expanded.includes(t.id)?{...t,eisenhower:quad}:t));
   };
-  // Drag a task onto another task's row to indent it as a subtask; drop it back onto its own parent's
-  // row to outdent it one level (Workflowy/Todoist-style). Guards against nesting a task under its own descendant.
-  const reparentTask=(draggedId,targetId)=>{
+  // Drag a task onto another task's row to indent it as a subtask (drop on the row's middle); drop on
+  // the row's top/bottom edge to just reorder it next to that task instead (Workflowy/Todoist-style).
+  // Dropping back onto its own parent's row outdents it one level. Guards against nesting a task under
+  // its own descendant either way.
+  const reparentTask=(draggedId,targetId,position='on')=>{
     if(draggedId===targetId)return;
     const dragged=tasks.find(t=>t.id===draggedId);
     if(!dragged)return;
-    if(isDescendantOf(draggedId,targetId,tasks)){showToast("↩️ Can't nest a task under its own subtask");return}
     const target=tasks.find(t=>t.id===targetId);
+    if(!target)return;
+    if(isDescendantOf(draggedId,targetId,tasks)){showToast("↩️ Can't move a task under its own sub-task");return}
+
+    if(position==='before'||position==='after'){
+      // Pure reorder — becomes a sibling of target, at target's level, positioned right next to it.
+      // Never auto-nests, which is what was missing: previously *any* drop nested the dragged task.
+      const newParentId=target.parentId||null;
+      const changingLevel=dragged.parentId!==newParentId;
+      const extra=changingLevel?{sectionId:target.sectionId||null,project:target.project||null}:{};
+      pushUndo('↕ Moved "'+dragged.text.slice(0,24)+'" '+(position==='before'?'above':'below')+' "'+target.text.slice(0,24)+'"',tasks);
+      const updated={...dragged,parentId:newParentId,...extra};
+      let arr=tasks.filter(t=>t.id!==draggedId);
+      const idx=arr.findIndex(t=>t.id===targetId);
+      arr.splice(position==='before'?idx:idx+1,0,updated);
+      persist(arr);
+      return;
+    }
+
+    // position==='on' → nest under target (or outdent if already its child)
     const outdenting=dragged.parentId===targetId;
     const newParentId=outdenting?(target?target.parentId||null:null):targetId;
     // When indenting, the task now "lives" wherever its new parent lives — sync section (and project,
@@ -889,6 +912,7 @@ function useExpandState(){
 function useRowDrag(onReparent){
   const [dragId,setDragId]=useState(null);
   const [hoverId,setHoverId]=useState(null);
+  const [hoverPos,setHoverPos]=useState(null); // 'before' | 'on' | 'after' — where on the target row we're hovering
   const [pos,setPos]=useState({x:0,y:0});
   const info=useRef({active:false,taskId:null,startX:0,startY:0,moved:false});
   const onRowDown=(e,taskId)=>{const pt=e.touches?e.touches[0]:e;info.current={active:true,taskId,startX:pt.clientX,startY:pt.clientY,moved:false};setPos({x:pt.clientX,y:pt.clientY})};
@@ -903,21 +927,29 @@ function useRowDrag(onReparent){
       const el=document.elementFromPoint(pt.clientX,pt.clientY);
       const rowEl=el&&el.closest&&el.closest('[data-taskrow]');
       const hid=rowEl?rowEl.getAttribute('data-taskrow'):null;
-      setHoverId(hid&&hid!==info.current.taskId?hid:null);
+      if(hid&&hid!==info.current.taskId){
+        const rect=rowEl.getBoundingClientRect();
+        const frac=(pt.clientY-rect.top)/rect.height;
+        setHoverId(hid);
+        setHoverPos(frac<0.28?'before':frac>0.72?'after':'on');
+      }else{
+        setHoverId(null);setHoverPos(null);
+      }
     }
   };
   const onRowUp=()=>{
-    if(info.current.moved&&info.current.taskId&&hoverId)onReparent(info.current.taskId,hoverId);
+    if(info.current.moved&&info.current.taskId&&hoverId)onReparent(info.current.taskId,hoverId,hoverPos||'on');
     const wasDrag=info.current.moved;
     info.current={active:false,taskId:null,startX:0,startY:0,moved:false};
-    setDragId(null);setHoverId(null);
+    setDragId(null);setHoverId(null);setHoverPos(null);
     return wasDrag;
   };
-  return{dragId,hoverId,pos,onRowDown,onRowMove,onRowUp};
+  return{dragId,hoverId,hoverPos,pos,onRowDown,onRowMove,onRowUp};
 }
 // Floating preview that follows the finger while dragging, showing exactly what will happen on drop —
-// same idea as Todoist's drop-line guide, adapted to our "drop onto a row to nest under it" model.
-function DragGhost({dragId,hoverId,pos,pool}){
+// same idea as Todoist's drop-line guide: drop on the top/bottom edge of a row to reorder next to it,
+// drop on its middle to nest under it.
+function DragGhost({dragId,hoverId,hoverPos,pos,pool}){
   if(!dragId)return null;
   const task=pool.find(t=>t.id===dragId);
   const target=hoverId?pool.find(t=>t.id===hoverId):null;
@@ -927,19 +959,53 @@ function DragGhost({dragId,hoverId,pos,pool}){
       <div className="bg-white rounded-xl px-3 py-2 shadow-2xl border-2 border-[var(--accent-400)]" style={{maxWidth:220}}>
         <p className="text-xs font-semibold text-stone-800 truncate">{task.text}</p>
         {target?(
-          <p className="text-[10px] text-violet-600 font-bold mt-1 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-violet-500"/>↳ becomes sub-task of "{target.text.slice(0,22)}"
-          </p>
+          hoverPos==='on'?(
+            <p className="text-[10px] text-violet-600 font-bold mt-1 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-violet-500"/>↳ becomes sub-task of "{target.text.slice(0,22)}"
+            </p>
+          ):(
+            <p className="text-[10px] text-teal-600 font-bold mt-1 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-teal-500"/>{hoverPos==='before'?'⬆ moves above':'⬇ moves below'} "{target.text.slice(0,22)}"
+            </p>
+          )
         ):(
-          <p className="text-[10px] text-stone-400 mt-1">Drop onto a task to nest under it</p>
+          <p className="text-[10px] text-stone-400 mt-1">Drop on a task's edge to reorder, or its middle to nest under it</p>
         )}
       </div>
     </div>
   );
 }
 
-/* ── Task Row ────────────────────────────────────────── */
-function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress,depth=0,childCount=0,dragId,hoverId,onRowDown,onRowMove,onRowUp,isExpanded=false,onToggleExpand,orphanParentText=null}){
+/* ── Kanban Card ─────────────────────────────────────── */
+// Board-view counterpart to TaskRow: same collapse-by-default nesting so a task's sub-tasks don't
+// clutter every column as separate cards — they nest under the parent card, indented, shown only
+// when that card is expanded.
+function KanbanCard({task,depth,childCount,isExpanded,onToggleExpand,onComplete,onCardDown,onCardMove,onCardUp,dragTaskId,colKey}){
+  const isHeading=task.text.trim().startsWith('*');
+  const displayText=isHeading?task.text.trim().slice(1).trim():task.text;
+  return(
+    <div key={task.id} onMouseDown={e=>onCardDown(e,task,colKey)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,task,colKey)} onTouchMove={onCardMove} onTouchEnd={onCardUp}
+      style={{touchAction:'none',opacity:dragTaskId===task.id?0.3:1,...(depth?{marginLeft:depth*14}:{})}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
+      {isHeading?<div className="w-4 h-4 flex-shrink-0"/>:(
+        <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onComplete(task.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:task.priority?PRI_COLOR[task.priority]:'#d1d5db'}}/>
+      )}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1">
+          {childCount>0&&(
+            <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onToggleExpand&&onToggleExpand(task.id)}} className="w-4 h-4 -ml-1 flex-shrink-0 flex items-center justify-center text-stone-400">
+              <span style={{fontSize:10}}>{isExpanded?'▾':'▸'}</span>
+            </button>
+          )}
+          <p className={isHeading?'text-xs font-black text-stone-500 uppercase tracking-wide leading-snug':'text-xs font-semibold text-stone-800 leading-snug'}>{displayText}</p>
+        </div>
+        {task.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(task.dueDate)}{task.dueTime?' '+fmtTime(task.dueTime):''}</p>}
+        {childCount>0&&<p className="text-[9px] text-stone-400 font-semibold mt-0.5">↳ {childCount} sub-task{childCount!==1?'s':''}{isExpanded?' (hide)':' (show)'}</p>}
+      </div>
+    </div>
+  );
+}
+
+function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated,selectMode,isSelected,onSelect,onLongPress,depth=0,childCount=0,dragId,hoverId,hoverPos,onRowDown,onRowMove,onRowUp,isExpanded=false,onToggleExpand,orphanParentText=null}){
   const done=task.status==='completed';
   const isHeading=task.text.trim().startsWith('*');
   const displayText=isHeading?task.text.trim().slice(1).trim():task.text;
@@ -964,9 +1030,14 @@ function TaskRow({task,onComplete,onEdit,projects,labels,showProject,showCreated
   const fmtCreatedShort=iso=>{if(!iso)return'';const d=new Date(iso);const now=new Date();const diff=Math.floor((now-d)/864e5);if(diff===0)return'Today '+d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});if(diff===1)return'Yesterday';if(diff<7)return diff+'d ago';return d.toLocaleDateString('en-IN',{day:'numeric',month:'short'})};
   const isBeingDragged=dragId===task.id;
   const isDropTarget=hoverId===task.id;
+  const dropOn=isDropTarget&&hoverPos==='on';
+  const dropBefore=isDropTarget&&hoverPos==='before';
+  const dropAfter=isDropTarget&&hoverPos==='after';
 
   return(
-    <div data-taskrow={task.id} className={'bg-white select-none '+(done?'opacity-60':'')+(isSelected?' bg-[var(--accent-50)]':'')+(isBeingDragged?' opacity-30':'')+(isDropTarget?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={{WebkitTouchCallout:'none',WebkitUserSelect:'none',userSelect:'none',touchAction:(selectMode&&isSelected)?'none':'auto',...(depth?{marginLeft:depth*18}:{})}}>
+    <div data-taskrow={task.id} className={'relative bg-white select-none '+(done?'opacity-60':'')+(isSelected?' bg-[var(--accent-50)]':'')+(isBeingDragged?' opacity-30':'')+(dropOn?' bg-violet-50 ring-2 ring-violet-300 ring-inset':'')} style={{WebkitTouchCallout:'none',WebkitUserSelect:'none',userSelect:'none',touchAction:(selectMode&&isSelected)?'none':'auto',...(depth?{marginLeft:depth*18}:{})}}>
+      {dropBefore&&<div className="absolute left-4 right-4 top-0 h-0.5 bg-teal-500 rounded-full z-10" style={{marginTop:-1}}/>}
+      {dropAfter&&<div className="absolute left-4 right-4 bottom-0 h-0.5 bg-teal-500 rounded-full z-10" style={{marginBottom:-1}}/>}
       <div className="flex gap-3 px-4 py-3" onClick={handleRowClick} onTouchStart={startLP} onTouchEnd={endTouch} onTouchMove={moveTouch} onMouseDown={startLP} onMouseMove={moveTouch} onMouseUp={endTouch} onMouseLeave={cancelLP}>
         {depth>0&&<span className="text-stone-300 flex-shrink-0 select-none" style={{marginTop:2}}>↳</span>}
         {/* Priority circle / select checkbox */}
@@ -1492,6 +1563,11 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
   const active=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
   const done=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
   const nestSeen=new Set(); // shared across every section's renderNested call this render — belt-and-suspenders against the same task rendering twice across sections
+  const kanbanSeen=new Set(); // same idea, but for the board/kanban columns below — keeps a sub-task from appearing both nested under its parent's card AND as its own separate card
+  const renderKanbanCards=(colTasks,colKey)=>buildNested(colTasks,allTasks||tasks,kanbanSeen,exp.expandedIds).map(({task,depth,childCount})=>(
+    <KanbanCard key={task.id} task={task} depth={depth} childCount={childCount} isExpanded={exp.expandedIds.has(task.id)} onToggleExpand={exp.toggleExpand}
+      onComplete={onComplete} onCardDown={onCardDown} onCardMove={onCardMove} onCardUp={onCardUp} dragTaskId={dragTaskId} colKey={colKey}/>
+  ));
   const onCardDown=(e,task,fromCol)=>{
     const pt=e.touches?e.touches[0]:e;
     dragInfo.current={active:true,taskId:task.id,startX:pt.clientX,startY:pt.clientY,moved:false,text:task.text,fromCol};
@@ -1646,33 +1722,19 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
         <div ref={kanbanScrollRef} className="flex gap-3 px-4 overflow-x-auto pb-2" style={{scrollbarWidth:'none'}}>
           <div data-colkey="none" className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol==='none'?'bg-[var(--accent-100)] ring-2 ring-[var(--accent-300)]':'bg-stone-50')} style={{width:220}}>
             <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">No Section · {noSection.length}</p>
-            {noSection.map(t=>(
-              <div key={t.id} onMouseDown={e=>onCardDown(e,t,'none')} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t,'none')} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
-                {t.text.trim().startsWith('*')?<div className="w-4 h-4 flex-shrink-0"/>:(
-                <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className={t.text.trim().startsWith('*')?'text-xs font-black text-stone-500 uppercase tracking-wide leading-snug':'text-xs font-semibold text-stone-800 leading-snug'}>{t.text.trim().startsWith('*')?t.text.trim().slice(1).trim():t.text}</p>
-                  {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
-                </div>
-              </div>
-            ))}
+            {renderKanbanCards(noSection,'none')}
             <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(null)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
           </div>
-          {prjSections.map(sec=>(
+          {prjSections.map((sec,si)=>(
             <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-[var(--accent-100)] ring-2 ring-[var(--accent-300)]':'bg-stone-50')} style={{width:220}}>
-              <p className="text-[10px] font-black text-stone-500 uppercase tracking-widest px-1 py-1.5">{sec.name} · {inSection(sec.id).length}</p>
-              {inSection(sec.id).map(t=>(
-                <div key={t.id} onMouseDown={e=>onCardDown(e,t,sec.id)} onMouseMove={onCardMove} onMouseUp={onCardUp} onTouchStart={e=>onCardDown(e,t,sec.id)} onTouchMove={onCardMove} onTouchEnd={onCardUp} style={{touchAction:'none',opacity:dragTaskId===t.id?0.3:1}} className="bg-white rounded-xl p-2.5 mb-1.5 shadow-sm select-none flex gap-2">
-                  {t.text.trim().startsWith('*')?<div className="w-4 h-4 flex-shrink-0"/>:(
-                  <button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:t.priority?PRI_COLOR[t.priority]:'#d1d5db'}}/>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className={t.text.trim().startsWith('*')?'text-xs font-black text-stone-500 uppercase tracking-wide leading-snug':'text-xs font-semibold text-stone-800 leading-snug'}>{t.text.trim().startsWith('*')?t.text.trim().slice(1).trim():t.text}</p>
-                    {t.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(t.dueDate)}{t.dueTime?' '+fmtTime(t.dueTime):''}</p>}
-                  </div>
+              <div className="flex items-center justify-between px-1 py-1.5">
+                <span className="text-[10px] font-black text-stone-500 uppercase tracking-widest truncate">{sec.name} · {inSection(sec.id).length}</span>
+                <div className="flex items-center gap-0.5 flex-shrink-0">
+                  <button onClick={()=>moveSection(sec.id,-1)} disabled={si===0} className="text-stone-300 text-xs px-1 disabled:opacity-20">◀</button>
+                  <button onClick={()=>moveSection(sec.id,1)} disabled={si===prjSections.length-1} className="text-stone-300 text-xs px-1 disabled:opacity-20">▶</button>
                 </div>
-              ))}
+              </div>
+              {renderKanbanCards(inSection(sec.id),sec.id)}
               <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
             </div>
           ))}
