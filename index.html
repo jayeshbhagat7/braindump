@@ -657,15 +657,15 @@ function App(){
   const archiveSel=()=>{pushUndo('📦 Archived '+selected.length+' task(s)',tasks);persist(tasks.map(t=>selected.includes(t.id)?{...t,status:'archived'}:t));exitSelect()};
   const deleteSel=()=>{selected.forEach(id=>{const t=tasks.find(x=>x.id===id);if(gcalOk&&t?.calendarEventId)safeDel(t.calendarEventId)});pushUndo('🗑️ Deleted '+selected.length+' task(s)',tasks);persist(tasks.filter(t=>!selected.includes(t.id)));exitSelect()};
   // Reorder a task relative to its neighbor within the *visible, ordered* list (listIds), not the raw array
+  // Uses the exact same reorder logic as drag-and-drop (insert right next to the neighbor in the
+  // underlying array) instead of a raw index swap — a swap could land the task somewhere else
+  // entirely, since hidden/collapsed sub-tasks sit interleaved in the underlying array between
+  // positions that look adjacent in the visible list.
   const moveTask=(id,dir,listIds)=>{
     const ids=listIds&&listIds.length?listIds:tasks.map(t=>t.id);
     const vIdx=ids.indexOf(id);if(vIdx<0)return;
-    const swapId=ids[vIdx+dir];if(swapId===undefined)return;
-    const arr=[...tasks];
-    const i1=arr.findIndex(t=>t.id===id),i2=arr.findIndex(t=>t.id===swapId);
-    if(i1<0||i2<0)return;
-    [arr[i1],arr[i2]]=[arr[i2],arr[i1]];
-    persist(arr);
+    const neighborId=ids[vIdx+dir];if(neighborId===undefined)return;
+    reparentTask(id,neighborId,dir<0?'before':'after');
   };
   // Enter select mode via long-press on a task row (replaces separate "Select" button)
   const startSelect=id=>{setSelectMode(true);setSelected([id])};
@@ -999,7 +999,7 @@ function KanbanCard({task,depth,childCount,isExpanded,onToggleExpand,onComplete,
           <p className={isHeading?'text-xs font-black text-stone-500 uppercase tracking-wide leading-snug':'text-xs font-semibold text-stone-800 leading-snug'}>{displayText}</p>
         </div>
         {task.dueDate&&<p className="text-[10px] text-stone-400 mt-1">📅 {fmtDate(task.dueDate)}{task.dueTime?' '+fmtTime(task.dueTime):''}</p>}
-        {childCount>0&&<p className="text-[9px] text-stone-400 font-semibold mt-0.5">↳ {childCount} sub-task{childCount!==1?'s':''}{isExpanded?' (hide)':' (show)'}</p>}
+        {childCount>0&&<button onMouseDown={e=>e.stopPropagation()} onTouchStart={e=>e.stopPropagation()} onClick={e=>{e.stopPropagation();onToggleExpand&&onToggleExpand(task.id)}} className="text-[9px] text-stone-400 font-semibold mt-0.5">↳ {childCount} sub-task{childCount!==1?'s':''}{isExpanded?' (hide)':' (show)'}</button>}
       </div>
     </div>
   );
@@ -1550,6 +1550,8 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
   const [addingSection,setAddingSection]=useState(false);
   const [newSecName,setNewSecName]=useState('');
   const [secMenu,setSecMenu]=useState(null);
+  const [collapsedSecs,setCollapsedSecs]=useState(()=>new Set()); // sections start expanded — collapsing hides its tasks under a single header row
+  const toggleSecCollapse=id=>setCollapsedSecs(prev=>{const n=new Set(prev);n.has(id)?n.delete(id):n.add(id);return n});
   const [sortKey,setSortKey]=useState('manual');
   const [asc,setAsc]=useState(true);
   const [dragTaskId,setDragTaskId]=useState(null);
@@ -1684,13 +1686,17 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
           <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(null)} className="w-full text-left px-4 py-2 text-xs font-bold text-stone-400">+ Add task</button>
           {prjSections.map((sec,si)=>{
             const secTasks=inSection(sec.id);
+            const secCollapsed=collapsedSecs.has(sec.id);
             return(
               <div key={sec.id} className="mt-1">
                 <div className="px-4 py-2 flex items-center justify-between bg-stone-50">
-                  <span className="text-[10px] font-black text-stone-500 uppercase tracking-widest">📂 {sec.name} ({secTasks.length})</span>
-                  <div className="flex items-center gap-0.5">
-                    <button onClick={()=>moveSection(sec.id,-1)} disabled={si===0} className="text-stone-300 text-xs px-1 disabled:opacity-20">▲</button>
-                    <button onClick={()=>moveSection(sec.id,1)} disabled={si===prjSections.length-1} className="text-stone-300 text-xs px-1 disabled:opacity-20">▼</button>
+                  <button onClick={()=>toggleSecCollapse(sec.id)} className="flex items-center gap-1.5 text-left flex-1 min-w-0">
+                    <span className="text-stone-400 flex-shrink-0" style={{fontSize:10}}>{secCollapsed?'▸':'▾'}</span>
+                    <span className="text-[10px] font-black text-stone-500 uppercase tracking-widest truncate">📂 {sec.name} ({secTasks.length})</span>
+                  </button>
+                  <div className="flex items-center gap-0.5 flex-shrink-0">
+                    <button onClick={e=>{moveSection(sec.id,-1);e.currentTarget.blur()}} disabled={si===0} className="text-stone-300 text-xs px-1 disabled:opacity-20 focus:outline-none" style={{WebkitTapHighlightColor:'transparent'}}>▲</button>
+                    <button onClick={e=>{moveSection(sec.id,1);e.currentTarget.blur()}} disabled={si===prjSections.length-1} className="text-stone-300 text-xs px-1 disabled:opacity-20 focus:outline-none" style={{WebkitTapHighlightColor:'transparent'}}>▼</button>
                     <button onClick={()=>setSecMenu(secMenu===sec.id?null:sec.id)} className="text-stone-300 text-xs px-1">⋯</button>
                   </div>
                 </div>
@@ -1705,9 +1711,9 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
                     </div>
                   </div>
                 )}
-                {secTasks.length===0&&<p className="px-4 py-2 text-[11px] text-stone-300">No tasks yet</p>}
-                {renderNested(secTasks,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,sharedSeen:nestSeen,...rowDrag})}
-                <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-4 py-2 text-xs font-bold text-stone-400">+ Add task</button>
+                {!secCollapsed&&secTasks.length===0&&<p className="px-4 py-2 text-[11px] text-stone-300">No tasks yet</p>}
+                {!secCollapsed&&renderNested(secTasks,allTasks||tasks,{onComplete,onEdit,projects,selectMode,selected,onSelect,onLongPress,expandedIds:exp.expandedIds,onToggleExpand:exp.toggleExpand,sharedSeen:nestSeen,...rowDrag})}
+                {!secCollapsed&&<button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-4 py-2 text-xs font-bold text-stone-400">+ Add task</button>}
               </div>
             );
           })}
@@ -1725,19 +1731,24 @@ function ProjectView({prj,tasks,allTasks,onReparent,onComplete,onEdit,onBack,onN
             {renderKanbanCards(noSection,'none')}
             <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(null)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
           </div>
-          {prjSections.map((sec,si)=>(
+          {prjSections.map((sec,si)=>{
+            const secCollapsed=collapsedSecs.has(sec.id);
+            return(
             <div key={sec.id} data-colkey={sec.id} className={'flex-shrink-0 rounded-2xl p-2 '+(hoverCol===sec.id?'bg-[var(--accent-100)] ring-2 ring-[var(--accent-300)]':'bg-stone-50')} style={{width:220}}>
               <div className="flex items-center justify-between px-1 py-1.5">
-                <span className="text-[10px] font-black text-stone-500 uppercase tracking-widest truncate">{sec.name} · {inSection(sec.id).length}</span>
+                <button onClick={()=>toggleSecCollapse(sec.id)} className="flex items-center gap-1 text-left flex-1 min-w-0">
+                  <span className="text-stone-400 flex-shrink-0" style={{fontSize:9}}>{secCollapsed?'▸':'▾'}</span>
+                  <span className="text-[10px] font-black text-stone-500 uppercase tracking-widest truncate">{sec.name} · {inSection(sec.id).length}</span>
+                </button>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
-                  <button onClick={()=>moveSection(sec.id,-1)} disabled={si===0} className="text-stone-300 text-xs px-1 disabled:opacity-20">◀</button>
-                  <button onClick={()=>moveSection(sec.id,1)} disabled={si===prjSections.length-1} className="text-stone-300 text-xs px-1 disabled:opacity-20">▶</button>
+                  <button onClick={e=>{moveSection(sec.id,-1);e.currentTarget.blur()}} disabled={si===0} className="text-stone-300 text-xs px-1 disabled:opacity-20 focus:outline-none" style={{WebkitTapHighlightColor:'transparent'}}>◀</button>
+                  <button onClick={e=>{moveSection(sec.id,1);e.currentTarget.blur()}} disabled={si===prjSections.length-1} className="text-stone-300 text-xs px-1 disabled:opacity-20 focus:outline-none" style={{WebkitTapHighlightColor:'transparent'}}>▶</button>
                 </div>
               </div>
-              {renderKanbanCards(inSection(sec.id),sec.id)}
-              <button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>
+              {!secCollapsed&&renderKanbanCards(inSection(sec.id),sec.id)}
+              {!secCollapsed&&<button onClick={()=>onOpenQuickAdd&&onOpenQuickAdd(sec.id)} className="w-full text-left px-1 py-1.5 mt-1 text-xs font-bold text-stone-400">+ Add task</button>}
             </div>
-          ))}
+            );})}
         </div>
         {dragTaskId&&(
           <div className="fixed z-50 pointer-events-none bg-white rounded-xl p-2.5 shadow-2xl border-2 border-[var(--accent-400)]" style={{left:dragPos.x-90,top:dragPos.y-20,width:180}}>
