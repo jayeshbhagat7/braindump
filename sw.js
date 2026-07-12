@@ -1,36 +1,51 @@
-const CACHE = 'gtd-v7';
-const PRECACHE = ['./index.html', './manifest.json', './icon.svg'];
+// BrainDump service worker
+//
+// Why the app previously needed an uninstall/reinstall to pick up updates: a typical "cache-first"
+// service worker checks its cache before the network, finds index.html already sitting there, and
+// serves that forever — it never even asks the network if something newer exists. The three things
+// below fix that permanently:
+//
+//   1. Network-first fetching — always try the network first; only fall back to the cache when
+//      offline. This means a normal page load simply gets the latest deployed file, no special
+//      "update" step required.
+//   2. self.skipWaiting() — a newly-installed service worker normally sits "waiting" until every
+//      open tab of the app is closed before it activates. skipWaiting() makes it activate immediately.
+//   3. self.clients.claim() — makes the new service worker take control of any already-open tabs
+//      right away, instead of only affecting the next fresh page load.
+//
+// Bump VERSION any time you want to force old cached entries to be cleared out immediately (not
+// strictly required day-to-day, since network-first already prefers fresh content whenever online).
+const VERSION = 'braindump-v2';
+const APP_SHELL = ['./', './index.html', './manifest.json'];
 
-self.addEventListener('install', e => {
+self.addEventListener('install', (e) => {
+  self.skipWaiting();
   e.waitUntil(
-    caches.open(CACHE)
-      .then(c => c.addAll(PRECACHE))
-      .then(() => self.skipWaiting())
+    caches.open(VERSION).then((c) => c.addAll(APP_SHELL).catch(() => {}))
   );
 });
 
-self.addEventListener('activate', e => {
+self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== VERSION).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
 
-self.addEventListener('fetch', e => {
+self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
+  // Skip cross-origin requests (CDN scripts, Supabase, Google APIs, etc.) — let the browser handle
+  // those normally rather than trying to cache/intercept them here.
+  if (!e.request.url.startsWith(self.location.origin)) return;
+
   e.respondWith(
-    caches.match(e.request).then(cached => {
-      const networkFetch = fetch(e.request).then(res => {
-        // Clone BEFORE anything else touches the response
-        if (res && res.ok) {
-          const clone = res.clone();
-          caches.open(CACHE).then(c => c.put(e.request, clone));
-        }
+    fetch(e.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(VERSION).then((c) => c.put(e.request, copy)).catch(() => {});
         return res;
-      }).catch(() => cached);
-      // Return cache immediately if available, otherwise wait for network
-      return cached || networkFetch;
-    })
+      })
+      .catch(() => caches.match(e.request))
   );
 });
