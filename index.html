@@ -811,7 +811,7 @@ function App(){
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={usedLabels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={usedLabels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={usedLabels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
-        {view.tab==='eisenhower' &&<EisenhowerView tasks={active} onEdit={setEditTask} onComplete={complete} projects={projects} onBulkAssign={bulkAssignEisenhower}/>}
+        {view.tab==='eisenhower' &&<EisenhowerView tasks={active} allTasks={tasks} onEdit={setEditTask} onComplete={complete} projects={projects} onBulkAssign={bulkAssignEisenhower}/>}
         {view.tab==='mission' &&<MissionView mission={mission} history={missionHistory} onSave={saveMission}/>}
         {view.tab==='circle' &&<CircleView items={circleItems} onSave={persistCircle} onPromote={(text,id)=>{persistCircle(circleItems.filter(i=>i.id!==id));setQuickAddPrefill(text);setShowQuickAdd(true)}}/>}
         {view.tab==='review' &&<WeeklyReviewView inboxCount={inbox.length} overdueCount={overdueTasks.length} overdueTasks={overdueTasks} goalTasks={goals} circleItems={circleItems} weekPool={[...todayTasks,...upcomingTasks]} onToggleFocus={toggleWeeklyFocus} onNav={nav} onFinish={finishWeeklyReview} lastWeeklyReview={lastWeeklyReview} reviewHistory={reviewHistory}/>}
@@ -2262,77 +2262,93 @@ function WeeklyReviewView({inboxCount,overdueCount,overdueTasks,goalTasks,circle
   );
 }
 
-function EisenhowerView({tasks,onEdit,onComplete,projects,onBulkAssign}){
+/* ── Card used inside each Eisenhower quadrant — same nested/collapsible pattern as List and Board
+   views, so a task's sub-tasks group under it instead of scattering as separate flat entries. Each
+   row (parent or sub-task) is independently selectable, so an individual sub-task can be bulk-moved
+   to a different quadrant than its parent via the selection bar below. ────────────────────────── */
+function EisenCard({task,depth,childCount,isExpanded,onToggleExpand,color,isSel,onToggleSel,onEdit,onComplete,orphanParentText}){
+  const isHead=task.text.trim().startsWith('*');
+  return(
+    <div style={{marginLeft:depth?depth*11:0}} className={'bg-white rounded-lg p-2 mb-1.5 shadow-sm flex gap-1.5 items-start '+(isSel?'ring-2 ring-indigo-300':'')}>
+      <button onClick={()=>onToggleSel(task.id)} className={'w-3.5 h-3.5 rounded border-2 flex-shrink-0 mt-0.5 flex items-center justify-center '+(isSel?'bg-indigo-500 border-indigo-500':'border-stone-300')}>
+        {isSel&&<svg width="7" height="5" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+      </button>
+      {childCount>0&&(
+        <button onClick={e=>{e.stopPropagation();onToggleExpand&&onToggleExpand(task.id)}} className="w-3.5 h-3.5 flex-shrink-0 flex items-center justify-center text-stone-400 -ml-1">
+          <span style={{fontSize:9}}>{isExpanded?'▾':'▸'}</span>
+        </button>
+      )}
+      <div className="min-w-0 flex-1" onClick={()=>onEdit(task)}>
+        <p className={isHead?'text-[11px] font-black text-stone-500 uppercase tracking-wide leading-snug':'text-[11px] font-semibold text-stone-800 leading-snug'}>{isHead?task.text.trim().slice(1).trim():task.text}</p>
+        {task.dueDate&&<p className="text-[9px] text-stone-400 mt-0.5">📅 {fmtDate(task.dueDate)}</p>}
+        {childCount>0&&<p className="text-[9px] text-stone-400">↳ {childCount} sub-task{childCount!==1?'s':''}</p>}
+        {orphanParentText&&<p className="text-[9px] text-violet-400 truncate">↳ sub-task of "{orphanParentText}"</p>}
+      </div>
+      {!isHead&&<button onClick={ev=>{ev.stopPropagation();onComplete(task.id)}} className="w-3.5 h-3.5 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:color}}/>}
+    </div>
+  );
+}
+function EisenhowerView({tasks,allTasks,onEdit,onComplete,projects,onBulkAssign}){
   const QUADS=[
     {k:'do',l:'Do First',sub:'Urgent + Important',color:'#ef4444',bg:'bg-red-50'},
     {k:'schedule',l:'Schedule',sub:'Important, not urgent',color:'#3b82f6',bg:'bg-blue-50'},
     {k:'delegate',l:'Delegate',sub:'Urgent, not important',color:'#f97316',bg:'bg-orange-50'},
     {k:'eliminate',l:'Eliminate',sub:'Neither',color:'#9ca3af',bg:'bg-stone-50'},
   ];
-  const unsorted=tasks.filter(t=>!t.eisenhower);
+  // Defensive filter — belt-and-suspenders on top of the caller already excluding completed/archived
+  // tasks. This guarantees a task disappears from every quadrant the instant it's marked done, even
+  // if some future caller ever forgets to pre-filter.
+  const pool=allTasks||tasks;
+  const liveTasks=tasks.filter(t=>t.status!=='completed'&&t.status!=='archived');
+  const exp=useExpandState();
+  const unsortedRows=buildNested(liveTasks.filter(t=>!t.eisenhower),pool,new Set(),exp.expandedIds);
   const [sel,setSel]=useState([]);
   const toggleSel=id=>setSel(s=>s.includes(id)?s.filter(x=>x!==id):[...s,id]);
   const assign=quad=>{onBulkAssign&&onBulkAssign(sel,quad);setSel([])};
   const SelBar=()=>sel.length>0&&(
-    <div className="flex gap-1.5 mb-3 flex-wrap sticky top-0 z-10 bg-stone-50/95 backdrop-blur px-1 py-1.5 rounded-xl">
+    <div className="flex gap-1.5 mb-2 flex-wrap sticky top-0 z-10 bg-stone-50/95 backdrop-blur px-1 py-1.5 rounded-xl">
       <span className="text-[10px] font-bold text-stone-500 self-center px-1">{sel.length} selected — move to:</span>
       {QUADS.map(q=><button key={q.k} onClick={()=>assign(q.k)} className="flex-1 py-2 rounded-xl text-[11px] font-bold text-white" style={{background:q.color,minWidth:'45%'}}>{q.l}</button>)}
       <button onClick={()=>setSel([])} className="text-[10px] text-stone-400 font-bold px-2">Clear</button>
     </div>
   );
   return(
-    <div className="pb-24">
-      <div className="px-4 pt-5 pb-4">
-        <h2 className="text-3xl font-black text-stone-900">🧭 Eisenhower Matrix</h2>
-        <p className="text-sm text-stone-400 mt-0.5">Select tasks (from any quadrant, or unsorted) and move them — sub-tasks travel with their parent.</p>
+    <div className="pb-24 flex flex-col" style={{height:'100vh'}}>
+      <div className="px-4 pt-5 pb-2 flex-shrink-0">
+        <h2 className="text-2xl font-black text-stone-900">🧭 Eisenhower Matrix</h2>
+        <p className="text-xs text-stone-400 mt-0.5">Select a task — or just one of its sub-tasks — and move it independently.</p>
       </div>
-      <div className="px-4"><SelBar/></div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 px-4">
+      <div className="px-4 flex-shrink-0"><SelBar/></div>
+      <div className="grid grid-cols-2 grid-rows-2 gap-2 px-2 flex-1 min-h-0" style={{minHeight:0}}>
         {QUADS.map(q=>{
-          const qTasks=tasks.filter(t=>t.eisenhower===q.k);
+          const qRows=buildNested(liveTasks.filter(t=>t.eisenhower===q.k),pool,new Set(),exp.expandedIds);
           return(
-            <div key={q.k} className={'rounded-2xl p-3 '+q.bg}>
-              <div className="flex items-baseline justify-between mb-2">
-                <p className="text-sm font-black" style={{color:q.color}}>{q.l}</p>
-                <p className="text-[10px] text-stone-400">{q.sub} · {qTasks.length}</p>
+            <div key={q.k} className={'rounded-2xl p-2 flex flex-col min-h-0 '+q.bg}>
+              <div className="flex items-baseline justify-between mb-1 flex-shrink-0 px-1">
+                <p className="text-xs font-black truncate" style={{color:q.color}}>{q.l}</p>
+                <p className="text-[9px] text-stone-400 flex-shrink-0">{qRows.length}</p>
               </div>
-              {!qTasks.length&&<p className="text-xs text-stone-300 py-3 text-center">No tasks here</p>}
-              {qTasks.map(t=>{
-                const isSel=sel.includes(t.id);
-                const isHead=t.text.trim().startsWith('*');
-                return(
-                  <div key={t.id} className={'bg-white rounded-xl p-2.5 mb-1.5 shadow-sm flex gap-2 items-start '+(isSel?'ring-2 ring-indigo-300':'')}>
-                    <button onClick={()=>toggleSel(t.id)} className={'w-4 h-4 rounded border-2 flex-shrink-0 mt-0.5 flex items-center justify-center '+(isSel?'bg-indigo-500 border-indigo-500':'border-stone-300')}>
-                      {isSel&&<svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3L2.8 5L7 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                    </button>
-                    <div className="min-w-0 flex-1" onClick={()=>onEdit(t)}>
-                      <p className={isHead?'text-xs font-black text-stone-500 uppercase tracking-wide leading-snug':'text-xs font-semibold text-stone-800 leading-snug'}>{isHead?t.text.trim().slice(1).trim():t.text}</p>
-                      {t.dueDate&&<p className="text-[10px] text-stone-400 mt-0.5">📅 {fmtDate(t.dueDate)}</p>}
-                    </div>
-                    {!isHead&&<button onClick={ev=>{ev.stopPropagation();onComplete(t.id)}} className="w-4 h-4 rounded-full border-2 flex-shrink-0 mt-0.5" style={{borderColor:q.color}}/>}
-                  </div>
-                );
-              })}
+              <div className="flex-1 min-h-0 overflow-y-auto px-0.5">
+                {!qRows.length&&<p className="text-[10px] text-stone-300 py-3 text-center">No tasks</p>}
+                {qRows.map(({task:t,depth,childCount,orphanParent})=>(
+                  <EisenCard key={t.id} task={t} depth={depth} childCount={childCount} isExpanded={exp.expandedIds.has(t.id)} onToggleExpand={exp.toggleExpand}
+                    color={q.color} isSel={sel.includes(t.id)} onToggleSel={toggleSel} onEdit={onEdit} onComplete={onComplete}
+                    orphanParentText={orphanParent?orphanParent.text:null}/>
+                ))}
+              </div>
             </div>
           );
         })}
       </div>
-      {unsorted.length>0&&(
-        <div className="mt-4 px-4">
-          <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">Not yet sorted ({unsorted.length})</p>
-          {unsorted.slice(0,30).map(t=>{
-            const isSel=sel.includes(t.id);
-            const isHead=t.text.trim().startsWith('*');
-            return(
-              <div key={t.id} className={'flex items-center gap-2 rounded-xl p-2.5 mb-1.5 shadow-sm border '+(isSel?'bg-indigo-50 border-indigo-200':'bg-white border-stone-100')}>
-                <button onClick={()=>toggleSel(t.id)} className={'w-4.5 h-4.5 rounded border-2 flex-shrink-0 flex items-center justify-center '+(isSel?'bg-indigo-500 border-indigo-500':'border-stone-300')} style={{width:18,height:18}}>
-                  {isSel&&<svg width="9" height="7" viewBox="0 0 9 7" fill="none"><path d="M1 3.5L3.2 6L8 1" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                </button>
-                <p onClick={()=>onEdit(t)} className={isHead?'flex-1 text-xs font-black text-stone-500 uppercase tracking-wide':'flex-1 text-xs font-semibold text-stone-700'}>{isHead?t.text.trim().slice(1).trim():t.text}</p>
-              </div>
-            );
-          })}
-          {unsorted.length>30&&<p className="text-[10px] text-stone-300 text-center mt-1">+{unsorted.length-30} more — use Filters/Labels or a project to narrow this down</p>}
+      {unsortedRows.length>0&&(
+        <div className="mt-3 px-4 flex-shrink-0" style={{maxHeight:'28vh',overflowY:'auto'}}>
+          <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2 sticky top-0 bg-white/95 backdrop-blur py-1">Not yet sorted ({unsortedRows.length})</p>
+          {unsortedRows.slice(0,60).map(({task:t,depth,childCount,orphanParent})=>(
+            <EisenCard key={t.id} task={t} depth={depth} childCount={childCount} isExpanded={exp.expandedIds.has(t.id)} onToggleExpand={exp.toggleExpand}
+              color="#a8a29e" isSel={sel.includes(t.id)} onToggleSel={toggleSel} onEdit={onEdit} onComplete={onComplete}
+              orphanParentText={orphanParent?orphanParent.text:null}/>
+          ))}
+          {unsortedRows.length>60&&<p className="text-[10px] text-stone-300 text-center mt-1">+{unsortedRows.length-60} more — use Filters/Labels or a project to narrow this down</p>}
         </div>
       )}
     </div>
@@ -2408,6 +2424,21 @@ function GoalsView({goals,allTasks,doneTasks,onEdit,onComplete,labels,projects,o
 /* ── Done View ───────────────────────────────────────── */
 function DoneView({done,arch,onUndo,onRestore,onDel}){
   const [tab,setTab]=useState('completed');
+  // "Achieved Today" vs the rest — this is purely a date comparison on completedAt, so a task
+  // automatically moves out of Today and into the general Completed list the moment the date rolls
+  // over, without any migration step needed.
+  const today=todayISO();
+  const doneToday=done.filter(t=>(t.completedAt||'').slice(0,10)===today);
+  const doneEarlier=done.filter(t=>(t.completedAt||'').slice(0,10)!==today);
+  const Row=(t,highlight)=>(
+    <div key={t.id} className={'bg-white flex items-center gap-3 px-4 py-3 active:bg-stone-50 '+(highlight?'border-l-2 border-[var(--accent-400)]':'')}>
+      <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-[var(--accent-500)] border-2 border-[var(--accent-500)] flex-shrink-0 flex items-center justify-center">
+        <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+      </button>
+      <div className="flex-1 min-w-0"><p className="text-sm line-through text-stone-400 truncate">{t.text}</p><p className="text-[10px] text-stone-300">{t.completedAt?new Date(t.completedAt).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}):''}</p></div>
+      <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400 flex-shrink-0">×</button>
+    </div>
+  );
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">{tab==='completed'?'Completed':'Archive'}</h2></div>
@@ -2420,15 +2451,14 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
       </div>
       {tab==='completed'&&<React.Fragment>
         {!done.length&&<div className="text-center py-12"><div style={{fontSize:44}}>🏆</div><p className="text-sm font-bold text-stone-500 mt-2">Nothing completed yet</p></div>}
-        {done.map(t=>(
-          <div key={t.id} className="bg-white flex items-center gap-3 px-4 py-3 active:bg-stone-50">
-            <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-[var(--accent-500)] border-2 border-[var(--accent-500)] flex-shrink-0 flex items-center justify-center">
-              <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            </button>
-            <div className="flex-1 min-w-0"><p className="text-sm line-through text-stone-400 truncate">{t.text}</p><p className="text-[10px] text-stone-300">{t.completedAt?new Date(t.completedAt).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'}):''}</p></div>
-            <button onClick={()=>onDel(t.id)} className="text-stone-200 text-xl active:text-red-400 flex-shrink-0">×</button>
-          </div>
-        ))}
+        {doneToday.length>0&&<React.Fragment>
+          <p className="px-4 pt-3 pb-1 text-xs font-black text-[var(--accent-600)] uppercase tracking-widest">🏆 Achieved Today ({doneToday.length})</p>
+          {doneToday.map(t=>Row(t,true))}
+        </React.Fragment>}
+        {doneEarlier.length>0&&<React.Fragment>
+          <p className="px-4 pt-4 pb-1 text-xs font-black text-stone-400 uppercase tracking-widest">Completed</p>
+          {doneEarlier.map(t=>Row(t,false))}
+        </React.Fragment>}
       </React.Fragment>}
       {tab==='archived'&&<React.Fragment>
         {!arch.length&&<div className="text-center py-12"><div style={{fontSize:44}}>📦</div><p className="text-sm font-bold text-stone-500 mt-2">Archive empty</p></div>}
