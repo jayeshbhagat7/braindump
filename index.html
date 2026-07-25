@@ -655,6 +655,13 @@ function App(){
     if(gcalOk&&t.dueDate){const cid=await gcal.create(t);if(cid){t.calendarEventId=cid;newTasks=newTasks.map(x=>x.id===t.id?t:x)}}
     persist(newTasks);
   };
+  // For things you actually did but never bothered to add as a task first — logs straight into
+  // "Achieved Today" as an already-completed entry, so spontaneous/unplanned work still counts
+  // toward the end-of-day sense of accomplishment, not just pre-dumped tasks you checked off.
+  const logAchievement=text=>{
+    if(!text||!text.trim())return;
+    addTask({text:text.trim(),status:'completed',completedAt:new Date().toISOString()});
+  };
   const complete=async id=>{
     const task=tasks.find(t=>t.id===id);if(!task)return;
     const upd={...task,status:'completed',completedAt:new Date().toISOString()};
@@ -746,6 +753,7 @@ function App(){
   const overdueTasks=sortDP(active.filter(t=>isOverdue(t.dueDate)));
   const upcomingTasks=sortDP(active.filter(t=>t.dueDate&&t.dueDate>td&&withinN(t.dueDate,7)));
   const doneTasks=tasks.filter(t=>t.status==='completed').sort((a,b)=>(b.completedAt||'').localeCompare(a.completedAt||''));
+  const doneToday=doneTasks.filter(t=>(t.completedAt||'').slice(0,10)===todayISO());
   const archivedTasks=tasks.filter(t=>t.status==='archived');
   const goals=active.filter(t=>t.goalType);
   const prjTasks=id=>sortDP(active.filter(t=>t.project===id||t.project===(prjById(id)||{}).name));
@@ -811,6 +819,7 @@ function App(){
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={usedLabels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={usedLabels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={usedLabels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
+        {view.tab==='achieved' &&<AchievedTodayView doneToday={doneToday} onLog={logAchievement} onUndo={uncomplete} onEdit={setEditTask}/>}
         {view.tab==='eisenhower' &&<EisenhowerView tasks={active} allTasks={tasks} onEdit={setEditTask} onComplete={complete} projects={projects} onBulkAssign={bulkAssignEisenhower}/>}
         {view.tab==='mission' &&<MissionView mission={mission} history={missionHistory} onSave={saveMission}/>}
         {view.tab==='circle' &&<CircleView items={circleItems} onSave={persistCircle} onPromote={(text,id)=>{persistCircle(circleItems.filter(i=>i.id!==id));setQuickAddPrefill(text);setShowQuickAdd(true)}}/>}
@@ -1237,7 +1246,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
               <div className="w-10 h-10 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white font-black text-lg">J</div>
               <div><p className="text-white font-black text-base">Jayesh Bhagat</p><p className="text-stone-400 text-xs">Site-in-Charge · WWC</p></div>
             </div>
-            {[{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'📋',l:'Weekly Review',tab:'review'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'🧭',l:'My Mission',tab:'mission'},{ico:'🌤️',l:'Circle of Influence',tab:'circle'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
+            {[{ico:'🏆',l:'Achieved Today',tab:'achieved'},{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'📋',l:'Weekly Review',tab:'review'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'🧭',l:'My Mission',tab:'mission'},{ico:'🌤️',l:'Circle of Influence',tab:'circle'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
               <button key={l} onClick={()=>{onNav(tab);setShowProfile(false)}} className="flex items-center gap-3 py-3 text-stone-300 text-sm font-semibold border-b border-stone-800">
                 <span style={{fontSize:18}}>{ico}</span>{l}
               </button>
@@ -2421,6 +2430,44 @@ function GoalsView({goals,allTasks,doneTasks,onEdit,onComplete,labels,projects,o
   );
 }
 
+/* ── Achieved Today ──────────────────────────────────── */
+// A dedicated, always-one-tap-away view of everything finished today — whether it was a scheduled
+// task, something dumped days ago, or never a task at all until you logged it just now. Exists
+// separately from Completed & Archive (which is the full history) specifically so it's quick to
+// check for that end-of-day sense of "here's what I actually got done." Rolls into the general
+// Completed list automatically once the date changes — no action needed.
+function AchievedTodayView({doneToday,onLog,onUndo,onEdit}){
+  const [logText,setLogText]=useState('');
+  const submitLog=()=>{if(!logText.trim())return;onLog&&onLog(logText);setLogText('')};
+  return(
+    <div className="pb-24">
+      <div className="px-4 pt-5 pb-3">
+        <h2 className="text-3xl font-black text-stone-900">🏆 Achieved Today</h2>
+        <p className="text-sm text-stone-400 mt-0.5">Scheduled or not, dumped beforehand or not — everything you finished today. Shifts to Completed tomorrow.</p>
+      </div>
+      <div className="px-4 pb-3">
+        <div className="flex gap-2">
+          <input value={logText} onChange={e=>setLogText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')submitLog()}}
+            placeholder="✅ Log something you did (wasn't on your list)…" className="flex-1 text-sm border border-stone-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:border-[var(--accent-400)]"/>
+          <button onClick={submitLog} disabled={!logText.trim()} className="px-4 py-2.5 bg-[var(--accent-600)] text-white rounded-xl text-sm font-bold disabled:opacity-40 flex-shrink-0">Add</button>
+        </div>
+      </div>
+      {!doneToday.length&&<div className="text-center py-14"><div style={{fontSize:48}}>🌱</div><p className="text-sm font-bold text-stone-500 mt-2">Nothing logged yet today</p><p className="text-xs text-stone-400 mt-1">Check tasks off as you go, or log something you did above</p></div>}
+      {doneToday.map(t=>(
+        <div key={t.id} className="bg-white flex items-center gap-3 px-4 py-3 active:bg-stone-50 border-l-2 border-[var(--accent-400)] mb-0.5">
+          <button onClick={()=>onUndo(t.id)} className="w-5 h-5 rounded-full bg-[var(--accent-500)] border-2 border-[var(--accent-500)] flex-shrink-0 flex items-center justify-center">
+            <svg width="10" height="8" viewBox="0 0 10 8" fill="none"><path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          </button>
+          <div className="flex-1 min-w-0" onClick={()=>onEdit&&onEdit(t)}>
+            <p className="text-sm text-stone-700 truncate">{t.text}</p>
+            <p className="text-[10px] text-stone-300">{t.completedAt?new Date(t.completedAt).toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit'}):''}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ── Done View ───────────────────────────────────────── */
 function DoneView({done,arch,onUndo,onRestore,onDel}){
   const [tab,setTab]=useState('completed');
@@ -2450,6 +2497,7 @@ function DoneView({done,arch,onUndo,onRestore,onDel}){
         ))}
       </div>
       {tab==='completed'&&<React.Fragment>
+        {doneToday.length>0&&<p className="px-4 pb-3 text-xs text-stone-400">🏆 {doneToday.length} completed today — see the <b>Achieved Today</b> tab for a focused view (and to log things you did off-list).</p>}
         {!done.length&&<div className="text-center py-12"><div style={{fontSize:44}}>🏆</div><p className="text-sm font-bold text-stone-500 mt-2">Nothing completed yet</p></div>}
         {doneToday.length>0&&<React.Fragment>
           <p className="px-4 pt-3 pb-1 text-xs font-black text-[var(--accent-600)] uppercase tracking-widest">🏆 Achieved Today ({doneToday.length})</p>
