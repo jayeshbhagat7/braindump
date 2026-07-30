@@ -388,14 +388,14 @@ function App(){
     const hist=mission.trim()?[{text:mission,savedAt:new Date().toISOString()},...missionHistory].slice(0,20):missionHistory;
     const ts=Date.now();
     setMission(text);setMissionHistory(hist);ls.set('mission',text);ls.set('missionHistory',hist);ls.set('missionTs',ts);
-    if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections,tombstones:ls.get('tombstones',{}),mission:text,missionHistory:hist,missionTs:ts,circleItems,circleTs:ls.get('circleTs',0),lastWeeklyReview,reviewHistory}).catch(()=>{});
+    if(gcalOk&&driveOk)drv.save(drivePayload({mission:text,missionHistory:hist,missionTs:ts})).catch(()=>{});
   };
   // Circle of Influence/Concern — reflective sort, deliberately separate from real tasks
   const [circleItems,setCircleItems]=useState(()=>ls.get('circleItems',[]));
   const persistCircle=items=>{
     const ts=Date.now();
     setCircleItems(items);ls.set('circleItems',items);ls.set('circleTs',ts);
-    if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections,tombstones:ls.get('tombstones',{}),mission,missionHistory,missionTs:ls.get('missionTs',0),circleItems:items,circleTs:ts,lastWeeklyReview,reviewHistory}).catch(()=>{});
+    if(gcalOk&&driveOk)drv.save(drivePayload({circleItems:items,circleTs:ts})).catch(()=>{});
   };
   // Weekly Review — a guided ritual, not just a calendar
   const [lastWeeklyReview,setLastWeeklyReview]=useState(()=>ls.get('lastWeeklyReview',null));
@@ -404,9 +404,38 @@ function App(){
     const now=new Date().toISOString();
     const hist=[{date:now,notes:notes||''},...reviewHistory].slice(0,30);
     setLastWeeklyReview(now);setReviewHistory(hist);ls.set('lastWeeklyReview',now);ls.set('reviewHistory',hist);
-    if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections,tombstones:ls.get('tombstones',{}),mission,missionHistory,missionTs:ls.get('missionTs',0),circleItems,circleTs:ls.get('circleTs',0),lastWeeklyReview:now,reviewHistory:hist}).catch(()=>{});
+    if(gcalOk&&driveOk)drv.save(drivePayload({lastWeeklyReview:now,reviewHistory:hist})).catch(()=>{});
   };
   const [selectMode,setSelectMode]=useState(false);
+  // Gratitude — quick daily chips, not a text essay. Kept as a flat append-only list (like reviewHistory)
+  // so multi-device merging is a simple union-by-id, no conflict resolution needed.
+  const [gratitude,setGratitude]=useState(()=>ls.get('gratitude',[]));
+  const addGratitude=text=>{
+    if(!text||!text.trim())return;
+    const entry={id:uid(),text:text.trim(),date:todayISO(),createdAt:new Date().toISOString()};
+    const next=[entry,...gratitude];
+    setGratitude(next);ls.set('gratitude',next);
+    if(gcalOk&&driveOk)drv.save(drivePayload({gratitude:next})).catch(()=>{});
+  };
+  const removeGratitude=id=>{
+    const next=gratitude.filter(g=>g.id!==id);
+    setGratitude(next);ls.set('gratitude',next);
+    if(gcalOk&&driveOk)drv.save(drivePayload({gratitude:next})).catch(()=>{});
+  };
+  // Single source of truth for what a Drive save contains — every save call should route through
+  // this so adding a new synced field (like gratitude) only ever has to happen in one place, instead
+  // of every individual save-site needing to remember to include it (several previously didn't,
+  // which meant saving e.g. a task change could silently erase Mission/Circle/Review data on Drive).
+  const drivePayload=overrides=>({
+    tasks:ls.get('tasks',[]),labels:ls.get('labels',[]),projects:ls.get('projects_v2',[]),sections:ls.get('sections',[]),
+    tombstones:ls.get('tombstones',{}),
+    mission:ls.get('mission',''),missionHistory:ls.get('missionHistory',[]),missionTs:ls.get('missionTs',0),
+    circleItems:ls.get('circleItems',[]),circleTs:ls.get('circleTs',0),
+    lastWeeklyReview:ls.get('lastWeeklyReview',null),reviewHistory:ls.get('reviewHistory',[]),
+    gratitude:ls.get('gratitude',[]),
+    _ts:Date.now(),
+    ...overrides,
+  });
   const [selected,setSelected]=useState([]);
   const [showLblAssign,setShowLblAssign]=useState(false);
   const [showPrjMove,setShowPrjMove]=useState(false);
@@ -471,7 +500,7 @@ function App(){
       const localMissionTs=ls.get('missionTs',0);
       const localCircleTs=ls.get('circleTs',0);
       if(!driveData||!driveData.tasks){
-        const ok=await drv.save({tasks:localTasks,labels,projects,sections,tombstones:localTomb,mission,missionHistory,missionTs:localMissionTs,circleItems,circleTs:localCircleTs,lastWeeklyReview,reviewHistory,_ts:Date.now()});
+        const ok=await drv.save(drivePayload({tasks:localTasks,tombstones:localTomb}));
         setDriveOk(ok);
         if(ok)showToast('☁️ '+localTasks.length+' tasks saved to Drive');
         else showToast('⚠️ Drive API may not be enabled — see Settings');
@@ -499,6 +528,7 @@ function App(){
       const remoteReview=driveData.lastWeeklyReview||null;
       const mergedLastReview=(remoteReview&&(!lastWeeklyReview||remoteReview>lastWeeklyReview))?remoteReview:lastWeeklyReview;
       const mergedReviewHistory=unionByKey(reviewHistory,driveData.reviewHistory,x=>x.date);
+      const mergedGratitude=unionByKey(gratitude,driveData.gratitude,x=>x.id);
       const changed=merged.length!==localTasks.length||JSON.stringify(merged)!==JSON.stringify(localTasks);
       setTasks(merged);ls.set('tasks',merged);ls.set('tasks_ts',Date.now());ls.set('tombstones',mergedTomb);
       if(mergedLabels.length!==labels.length){setLabels(mergedLabels);ls.set('labels',mergedLabels)}
@@ -510,11 +540,12 @@ function App(){
       ls.set('circleTs',mergedCircleTs);
       if(mergedLastReview!==lastWeeklyReview){setLastWeeklyReview(mergedLastReview);ls.set('lastWeeklyReview',mergedLastReview)}
       if(mergedReviewHistory.length!==reviewHistory.length){setReviewHistory(mergedReviewHistory);ls.set('reviewHistory',mergedReviewHistory)}
+      if(mergedGratitude.length!==gratitude.length){setGratitude(mergedGratitude);ls.set('gratitude',mergedGratitude)}
       // Write the merged result straight back so both devices converge on the same state
-      await drv.save({tasks:merged,labels:mergedLabels,projects:mergedProjects,sections:mergedSections,tombstones:mergedTomb,mission:mergedMission,missionHistory:mergedMissionHistory,missionTs:mergedMissionTs,circleItems:mergedCircle,circleTs:mergedCircleTs,lastWeeklyReview:mergedLastReview,reviewHistory:mergedReviewHistory,_ts:Date.now()});
+      await drv.save(drivePayload({tasks:merged,labels:mergedLabels,projects:mergedProjects,sections:mergedSections,tombstones:mergedTomb,mission:mergedMission,missionHistory:mergedMissionHistory,missionTs:mergedMissionTs,circleItems:mergedCircle,circleTs:mergedCircleTs,lastWeeklyReview:mergedLastReview,reviewHistory:mergedReviewHistory,gratitude:mergedGratitude}));
       if(changed&&driveTasks.length)showToast('☁️ Synced with your other device');
     }catch(e){setDriveOk(false)}
-  },[labels,projects,sections,mission,missionHistory,circleItems,lastWeeklyReview,reviewHistory]);
+  },[labels,projects,sections,mission,missionHistory,circleItems,lastWeeklyReview,reviewHistory,gratitude]);
 
   const flushCalDel=async()=>{
     if(!pendingCalDel.length)return;
@@ -590,11 +621,11 @@ function App(){
     let tomb=ls.get('tombstones',{});
     if(deletedNow.length){tomb={...tomb};deletedNow.forEach(id=>{tomb[id]=now});ls.set('tombstones',tomb)}
     setTasks(stamped);ls.set('tasks',stamped);ls.set('tasks_ts',now);
-    if(gcalOk&&driveOk)drv.save({tasks:stamped,labels:fl,projects:fp,sections,tombstones:tomb,_ts:now}).catch(()=>{});
+    if(gcalOk&&driveOk)drv.save(drivePayload({tasks:stamped,labels:fl,projects:fp,tombstones:tomb})).catch(()=>{});
   },[gcalOk,driveOk,labels,projects,sections,tasks]);
-  const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk&&driveOk)drv.save({tasks,labels:l,projects,sections,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
-  const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save({tasks,labels,projects:p,sections,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
-  const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save({tasks,labels,projects,sections:sec,tombstones:ls.get('tombstones',{})}).catch(()=>{})};
+  const persistLbls=l=>{setLabels(l);ls.set('labels',l);if(gcalOk&&driveOk)drv.save(drivePayload({labels:l})).catch(()=>{})};
+  const persistPrjs=p=>{setProjects(p);ls.set('projects_v2',p);if(gcalOk&&driveOk)drv.save(drivePayload({projects:p})).catch(()=>{})};
+  const persistSections=sec=>{setSections(sec);ls.set('sections',sec);if(gcalOk&&driveOk)drv.save(drivePayload({sections:sec})).catch(()=>{})};
   const quickMoveSection=(taskId,sectionId)=>{pushUndo('📂 Moved task',tasks);persist(tasks.map(t=>t.id===taskId?{...t,sectionId}:t))};
   const toggleWeeklyFocus=taskId=>persist(tasks.map(t=>t.id===taskId?{...t,weeklyFocus:!t.weeklyFocus}:t));
   const bulkAssignEisenhower=(ids,quad)=>{
@@ -819,7 +850,8 @@ function App(){
         {view.tab==='search'  &&<SearchView q={searchQ} setQ={setSearchQ} results={searchResults} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} labels={usedLabels} projects={projects}/>}
         {view.tab==='scheduled'&&<ScheduledView tasks={scheduledAll} onComplete={complete} onEdit={setEditTask} onToggleSub={toggleSub} projects={projects} labels={usedLabels} selectMode={selectMode} selected={selected} onSelect={toggleSel} onLongPress={startSelect}/>}
         {view.tab==='goals'   &&<GoalsView goals={goals} allTasks={active} doneTasks={doneTasks.filter(t=>t.goalType)} onEdit={setEditTask} onComplete={complete} labels={usedLabels} projects={projects} onSave={saveEdit} onAdd={addTask}/>}
-        {view.tab==='achieved' &&<AchievedTodayView doneToday={doneToday} onLog={logAchievement} onUndo={uncomplete} onEdit={setEditTask}/>}
+        {view.tab==='achieved' &&<AchievedTodayView doneToday={doneToday} onLog={logAchievement} onUndo={uncomplete} onEdit={setEditTask} gratitudeCount={gratitude.length}/>}
+        {view.tab==='gratitude' &&<GratitudeView gratitude={gratitude} onAdd={addGratitude} onRemove={removeGratitude}/>}
         {view.tab==='eisenhower' &&<EisenhowerView tasks={active} allTasks={tasks} onEdit={setEditTask} onComplete={complete} projects={projects} onBulkAssign={bulkAssignEisenhower}/>}
         {view.tab==='mission' &&<MissionView mission={mission} history={missionHistory} onSave={saveMission}/>}
         {view.tab==='circle' &&<CircleView items={circleItems} onSave={persistCircle} onPromote={(text,id)=>{persistCircle(circleItems.filter(i=>i.id!==id));setQuickAddPrefill(text);setShowQuickAdd(true)}}/>}
@@ -1246,7 +1278,7 @@ function BrowseView({projects,labels,tasks,goals,doneTasks,archivedTasks,onNav,o
               <div className="w-10 h-10 rounded-full bg-[var(--accent-600)] flex items-center justify-center text-white font-black text-lg">J</div>
               <div><p className="text-white font-black text-base">Jayesh Bhagat</p><p className="text-stone-400 text-xs">Site-in-Charge · WWC</p></div>
             </div>
-            {[{ico:'🏆',l:'Achieved Today',tab:'achieved'},{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'📋',l:'Weekly Review',tab:'review'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'🧭',l:'My Mission',tab:'mission'},{ico:'🌤️',l:'Circle of Influence',tab:'circle'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
+            {[{ico:'🏆',l:'Achieved Today',tab:'achieved'},{ico:'🙏',l:'Gratitude',tab:'gratitude'},{ico:'⚙️',l:'Settings',tab:'settings'},{ico:'🕸️',l:'Web of Thoughts',tab:'web'},{ico:'📋',l:'Weekly Review',tab:'review'},{ico:'🧭',l:'Eisenhower Matrix',tab:'eisenhower'},{ico:'🌟',l:'Goals',tab:'goals'},{ico:'🧭',l:'My Mission',tab:'mission'},{ico:'🌤️',l:'Circle of Influence',tab:'circle'},{ico:'📊',l:'Completed & Archive',tab:'done'}].map(({ico,l,tab})=>(
               <button key={l} onClick={()=>{onNav(tab);setShowProfile(false)}} className="flex items-center gap-3 py-3 text-stone-300 text-sm font-semibold border-b border-stone-800">
                 <span style={{fontSize:18}}>{ico}</span>{l}
               </button>
@@ -2430,13 +2462,72 @@ function GoalsView({goals,allTasks,doneTasks,onEdit,onComplete,labels,projects,o
   );
 }
 
+/* ── Gratitude ───────────────────────────────────────── */
+// Deliberately NOT built like a task list — no checkbox, nothing to "complete." It's a running list
+// you only ever add to (never check off), meant to be revisited — today's entries, the week's, or
+// just shuffled at random the way you'd flip through an old index-card box — not worked through.
+function GratitudeView({gratitude,onAdd,onRemove}){
+  const [text,setText]=useState('');
+  const [filter,setFilter]=useState('all'); // 'all' | 'today' | 'week' | 'random'
+  const [randomSeed,setRandomSeed]=useState(1);
+  const submit=()=>{if(!text.trim())return;onAdd(text);setText('')};
+  const today=todayISO();
+  const weekAgoD=new Date();weekAgoD.setDate(weekAgoD.getDate()-6);
+  const weekAgo=weekAgoD.toISOString().slice(0,10);
+  const fmtFull=iso=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})};
+
+  const sorted=useMemo(()=>[...gratitude].sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')),[gratitude]);
+  const shown=useMemo(()=>{
+    if(filter==='today')return sorted.filter(g=>g.date===today);
+    if(filter==='week')return sorted.filter(g=>g.date>=weekAgo);
+    if(filter==='random'){
+      // Simple seeded shuffle — re-rolls only when "Shuffle again" is tapped, not on every render
+      const pool=[...gratitude];const picked=[];let seed=randomSeed;
+      const rand=()=>{seed=(seed*9301+49297)%233280;return seed/233280};
+      while(pool.length&&picked.length<5)picked.push(pool.splice(Math.floor(rand()*pool.length),1)[0]);
+      return picked;
+    }
+    return sorted;
+  },[filter,sorted,gratitude,randomSeed,today,weekAgo]);
+
+  return(
+    <div className="pb-24">
+      <div className="px-4 pt-5 pb-3">
+        <h2 className="text-3xl font-black text-stone-900">🙏 Gratitude</h2>
+        <p className="text-sm text-stone-400 mt-0.5">A running list, not a checklist — nothing here ever gets "done." Add whenever something comes to mind, then revisit whenever you like.</p>
+      </div>
+      <div className="px-4 pb-3">
+        <div className="flex gap-2">
+          <input value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')submit()}}
+            placeholder="Something you're grateful for…" className="flex-1 text-sm border border-stone-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:border-amber-300"/>
+          <button onClick={submit} disabled={!text.trim()} className="px-4 py-2.5 bg-amber-400 text-white rounded-xl text-sm font-bold disabled:opacity-40 flex-shrink-0">Add</button>
+        </div>
+      </div>
+      <div className="flex gap-2 px-4 pb-3 flex-wrap items-center">
+        {[['all','All'],['today','Today'],['week','This Week'],['random','🎲 Random']].map(([k,l])=>(
+          <button key={k} onClick={()=>{setFilter(k);if(k==='random')setRandomSeed(s=>s+1)}} className={'text-xs font-bold px-3 py-1.5 rounded-full '+(filter===k?'bg-amber-400 text-white':'bg-amber-50 text-amber-600')}>{l}</button>
+        ))}
+        {filter==='random'&&<button onClick={()=>setRandomSeed(s=>s+1)} className="text-xs font-bold px-3 py-1.5 rounded-full bg-stone-100 text-stone-500">🔄 Shuffle again</button>}
+      </div>
+      {!shown.length&&<div className="text-center py-14"><div style={{fontSize:44}}>🙏</div><p className="text-sm font-bold text-stone-500 mt-2">{gratitude.length?'Nothing in this view':'Nothing logged yet'}</p><p className="text-xs text-stone-400 mt-1">{gratitude.length?'Try a different filter above':"Add the first thing you're grateful for"}</p></div>}
+      {shown.map(g=>(
+        <div key={g.id} className="bg-white flex items-start gap-3 px-4 py-3 border-b border-stone-50">
+          <span className="text-amber-400 mt-0.5 flex-shrink-0" style={{fontSize:14}}>🙏</span>
+          <div className="flex-1 min-w-0"><p className="text-sm text-stone-700">{g.text}</p><p className="text-[10px] text-stone-300 mt-0.5">{fmtFull(g.date)}</p></div>
+          <button onClick={()=>onRemove(g.id)} className="text-stone-200 text-lg active:text-red-400 flex-shrink-0">×</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ── Achieved Today ──────────────────────────────────── */
 // A dedicated, always-one-tap-away view of everything finished today — whether it was a scheduled
 // task, something dumped days ago, or never a task at all until you logged it just now. Exists
 // separately from Completed & Archive (which is the full history) specifically so it's quick to
 // check for that end-of-day sense of "here's what I actually got done." Rolls into the general
 // Completed list automatically once the date changes — no action needed.
-function AchievedTodayView({doneToday,onLog,onUndo,onEdit}){
+function AchievedTodayView({doneToday,onLog,onUndo,onEdit,gratitudeCount}){
   const [logText,setLogText]=useState('');
   const submitLog=()=>{if(!logText.trim())return;onLog&&onLog(logText);setLogText('')};
   return(
@@ -2444,8 +2535,10 @@ function AchievedTodayView({doneToday,onLog,onUndo,onEdit}){
       <div className="px-4 pt-5 pb-3">
         <h2 className="text-3xl font-black text-stone-900">🏆 Achieved Today</h2>
         <p className="text-sm text-stone-400 mt-0.5">Scheduled or not, dumped beforehand or not — everything you finished today. Shifts to Completed tomorrow.</p>
+        {gratitudeCount>0&&<p className="text-xs text-amber-600 font-semibold mt-2">🙏 {gratitudeCount} in your Gratitude list — see the Gratitude tab</p>}
       </div>
       <div className="px-4 pb-3">
+        <p className="text-xs font-black text-stone-400 uppercase tracking-widest mb-2">What got done</p>
         <div className="flex gap-2">
           <input value={logText} onChange={e=>setLogText(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')submitLog()}}
             placeholder="✅ Log something you did (wasn't on your list)…" className="flex-1 text-sm border border-stone-200 rounded-xl px-3 py-2.5 bg-white focus:outline-none focus:border-[var(--accent-400)]"/>
