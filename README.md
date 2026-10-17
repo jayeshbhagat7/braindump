@@ -1,168 +1,148 @@
-# Brain Dump — Setup Guide
+# GTD Brain Dump
 
-A single-file React + Google Drive/Calendar task app, built Todoist-style: braindump inbox, projects with sections (list or board view), sub-tasks, Quick Add with natural-language parsing, an Eisenhower Matrix, and a desktop sidebar layout alongside the mobile bottom nav.
+A lightweight, installable personal task manager built as a client-side React app. It supports fast task capture, project and label organization, scheduling, recurring tasks, goals, and optional Google Drive and Google Calendar integration.
 
-## What's new in this build
+**Live app:** https://jayeshbhagat7.github.io/braindump/  
+**Privacy Policy:** https://jayeshbhagat7.github.io/braindump/privacy.html  
+**Terms of Service:** https://jayeshbhagat7.github.io/braindump/terms.html
 
-This build folds in a large round of fixes and features since the last README update:
+## Features
 
-- **Sync overhaul.** Sync used to only pull from Drive once, on connect — two devices could drift apart until you manually pulled-to-refresh or reloaded. It now checks Drive automatically whenever you switch back to the app and every ~40 seconds while it's open. Merging is now done **task by task** (whichever device edited a *specific* task most recently wins for that task, not "whichever whole list is newer"), with deletion tombstones so a task deleted on one device doesn't quietly reappear from the other.
-- **Google reconnects are lighter.** A lapsed session used to redisplay the entire first-time setup block. Now it's a single "🔐 Reconnect Google" tap — your Client ID stays remembered. The app also proactively refreshes your access token in the background before it expires, so you should hit the reconnect screen less often in the first place.
-- **Sub-tasks are now real, independent tasks**, not a lightweight checklist trapped inside a parent. Any task can become a sub-task of any other:
-  - Long-press to select a task, then use the **⇥ Indent** / **⇤ Outdent** buttons in the selection bar — the reliable way to do this.
-  - Or drag a selected task onto another task's row to indent it there; drag it back onto its parent's row to outdent. A floating preview follows your finger and tells you what will happen before you let go.
-  - Existing old-style sub-tasks were migrated automatically the first time you opened this build — nothing was lost.
-- **Full-screen Date/Time picker**, matching Todoist's pattern: quick options (Tomorrow / Later this week / This weekend / Next week), an infinite-scrolling month calendar with task-count dots, an "Add time" step with a drag-or-tap analog clock, and Repeat — all with Save as a tick icon at the top, not a button buried at the bottom.
-- **Task edit form is now pill-based.** Date, Priority, Project, Section, Labels, Deadline, Duration, Eisenhower quadrant, and Goal are compact pills — tap one to open its picker — instead of a long scroll of always-expanded chip grids.
-- **Eisenhower Matrix is back**, reachable from the sidebar (desktop) or the profile menu (mobile): a proper 2×2 grid (Do First / Schedule / Delegate / Eliminate) with an "unsorted" list for anything you haven't quadrant-tagged yet.
-- **Kanban board, fixed and extended.** Cards can be completed directly (a tick circle, same as list view), dragged between columns with auto-scroll near the board's edges, and each column has its own "+ Add task" that opens Quick Add pre-filled with that section. A same-column no-op bug (dropping a card back where it started could visually duplicate it) is fixed.
-- **List/Board view choice is remembered per project**, including across a full app reload.
-- **Undo.** Completing, archiving, deleting, or bulk-moving tasks shows a 5-second "UNDO" toast instead of being instantly final.
-- **Pull-to-refresh** replaces the old manual "Retry Drive" / "Force sync" buttons — swipe down at the top of any list to sync.
-- **Desktop gets a real sidebar** (Todoist-style: Search, Inbox, Today, Upcoming, Filters & Labels, Eisenhower Matrix, Favorites, My Projects tree), while the bottom tab bar stays for mobile. A CSS/viewport bug that hid the mobile bottom bar under Chrome's collapsing address bar, and briefly broke list scrolling entirely, is fixed.
-- **Custom Filters** — build and save a project + label + priority combination as a named filter, sitting alongside Favorites.
-- **Sort menu** (Manual / Date / Priority / A–Z, ascending or descending) on Inbox, Project, and Label views.
-- **Upcoming** now has an expandable month grid with dot-indicators above the day-by-day agenda.
-- **Deadline** (separate from due date), **Duration**, and **Comments** fields on tasks.
-- **`*Heading` trick**: start a task's text with `*` and it displays as a bold, non-completable title row with no checkbox — handy for labeling a block of tasks without it being an actionable item itself.
-- Calendar events for completed/deleted tasks that failed to delete (e.g. during a token hiccup) now retry automatically instead of lingering on your calendar forever.
-- Fixed a broken service worker precache entry (`styles.css`, which doesn't exist in this build) that could silently prevent offline caching from installing at all.
+### Capture and organize
+- **Quick Add** with natural-language parsing for dates, times, priorities, projects, sections, and labels. Examples:
+  - `Call supplier tomorrow 3pm @Work #followup p1`
+  - `Submit report next week`
+  - `Check materials in 3 days`
+- **Inbox** for quickly capturing unfiled tasks.
+- **Today** for overdue, due-today, and upcoming tasks.
+- **Upcoming** for dated tasks.
+- **Projects** with nested sub-projects and project sections.
+- **Labels** and built-in/custom filters.
+- **Search** across tasks.
+- **Favorites** for quick access to projects and labels.
+- **Web of Thoughts** to explore connections between projects, labels, and tasks.
+- **Goals** to group tasks by goal timeline.
+- **Completed & Archive** to review finished or archived tasks.
 
-## Feature list (current state)
+### Task details and workflows
+- Due date and optional time.
+- Priority levels P1–P4.
+- Labels, project, and section assignment.
+- Separate deadline and duration fields.
+- Recurring tasks: daily, weekly, monthly, or yearly.
+- Task comments.
+- Sub-tasks and task selection/bulk actions.
+- Eisenhower Matrix classification.
+- Sort by manual order, date, priority, or alphabetical order where available.
+- A short **Undo** window for supported task actions.
+- Inbox items that remain unfiled for more than seven days are automatically archived.
+- JSON backup download and restore in Settings.
 
-- **Views:** Today, Inbox, Browse (Projects/Labels/Sections), Project (List or Board), Label, Search, Upcoming (week strip + month grid), Filters & Labels, Eisenhower Matrix, Goals, Web of Thoughts, Done/Archive, Settings.
-- **Quick Add:** natural-language parsing (`tomorrow 3pm @Project /Section #label p1`) plus manual Date/Priority/Labels pills for when you'd rather tap than type.
-- **Projects:** nested sub-projects, sections within a project, List/Board toggle (remembered per project), section-level ⋯ menu (add task / rename / duplicate / archive / delete), section reordering.
-- **Tasks:** due date + time, deadline, duration, priority (with auto-escalation the longer an overdue task sits), labels, recurring (daily/weekly/monthly/yearly), comments, real nested sub-tasks, Eisenhower quadrant, goal timeline.
-- **Bulk actions** (long-press to select): move up/down, indent/outdent, copy, label, move to project/section, archive, delete — each undoable.
-- **Sync:** Google Drive (task storage, appDataFolder, survives a phone reset) + Google Calendar (auto-creates/removes all-day events as you assign/complete/delete dated tasks).
-- **Offline-first:** works without Drive connected; local storage is the source of truth, Drive is a sync layer on top.
-- **Responsive:** sidebar on desktop-width screens, bottom tab bar on mobile.
+### Google integration (optional)
+- **Google Drive:** stores a copy of app data in the Google Drive app-specific `appDataFolder` for sync and recovery.
+- **Google Calendar:** creates related all-day calendar events for dated tasks and attempts to remove associated events when tasks are completed or deleted.
+- A manual **Sync all** action is available in Settings. On mobile, pull down at the top of a list to trigger a sync.
+- Google access can be disconnected in Settings or revoked from your Google Account.
 
----
+### Installable and responsive
+- Progressive Web App (PWA) manifest and service worker.
+- Responsive layout with desktop sidebar and mobile bottom navigation.
+- Service worker caching supports previously cached files when offline. Google sync requires a network connection.
 
-## Step 1: Install on Android (2 minutes)
+## Deployment
 
-### Easiest: Deploy free on Netlify
-1. Go to **app.netlify.com/drop** on your PC or phone
-2. Drag this entire folder and drop it on the page
-3. You get a URL like `your-name.netlify.app` — copy it
-4. Open that URL in **Chrome on Android**
-5. Tap the Chrome menu **(⋮) → Add to Home screen → Add**
-6. The app icon appears on your home screen like a real app ✅
+This repository is configured for GitHub Pages:
 
-### Alternative: GitHub Pages
-1. Create a GitHub account and a new repository
-2. Upload all 4 files (`index.html`, `manifest.json`, `sw.js`, `icon.svg`) to the repo
-3. Go to Settings → Pages → Deploy from main branch
-4. Your URL: `yourusername.github.io/repo-name`
-5. Follow steps 4–6 above
+**https://jayeshbhagat7.github.io/braindump/**
 
----
+Keep the following files in the published repository root. Use these exact filenames (not dated filenames that may be used when downloading or sharing copies):
 
-## Step 2: Google Calendar Sync (10 minutes, optional)
+| File | Purpose |
+|---|---|
+| `index.html` | Main app and UI |
+| `manifest.json` | PWA name, start URL, display mode, and icon declaration |
+| `sw.js` | Service worker and offline cache |
+| `styles.css` | File precached by the service worker; keep it present because the service worker includes it in its precache list |
+| `icon.svg` | PWA app icon |
+| `privacy.html` | Public privacy policy |
+| `terms.html` | Public Terms of Service |
+| `README.md` | Project documentation |
 
-Once the app is live on HTTPS, you can link it to Google Calendar and Drive (Drive stores your tasks so they survive a phone reset or sync across devices).
+### Publish changes to GitHub Pages
 
-### 2a. Create Google Cloud credentials
-1. Go to **console.cloud.google.com** and sign in
-2. Click **Select a project → New Project** → name it anything → Create
-3. Go to **APIs & Services → Library**
-4. Search for **Google Calendar API** → click it → **Enable**
-5. Also search for **Google Drive API** → click it → **Enable** (needed for task sync)
-6. Go to **APIs & Services → Credentials**
-7. Click **+ Create Credentials → OAuth 2.0 Client ID**
-8. If prompted, configure the OAuth consent screen:
-   - User type: **External** → Create
-   - App name: anything (e.g. "My Brain Dump")
-   - Add your email as support email → Save and Continue × 3
-9. Back to Credentials → Create OAuth 2.0 Client ID:
-   - Application type: **Web application**
-   - Under **Authorized JavaScript origins**, click **Add URI**
-   - Paste your Netlify/GitHub URL (e.g. `https://your-name.netlify.app`)
-   - Click **Create**
-10. Copy the **Client ID** shown (ends in `.apps.googleusercontent.com`)
+1. Put the updated files in the repository root.
+2. Commit and push the changes to the branch configured in **Settings → Pages** (commonly `main`).
+3. Wait for GitHub Pages to finish deploying.
+4. Open the live app and policy pages to verify they load:
+   - https://jayeshbhagat7.github.io/braindump/
+   - https://jayeshbhagat7.github.io/braindump/privacy.html
+   - https://jayeshbhagat7.github.io/braindump/terms.html
 
-### 2b. Connect in the app
-1. Open your app → tap **⚙️ Settings** (bottom nav, or sidebar on desktop)
-2. Paste your Client ID in the field → **Save Client ID**
-3. Tap **🔐 Sign in with Google**
-4. Choose your Google account and allow Calendar + Drive access
-5. Done! Settings now shows **✓ Connected**
+For this repository, `manifest.json` starts the app at `./index.html`, and `index.html` registers `./sw.js`. Do not rename these files unless you also update the references in the app.
 
-This is genuinely a one-time setup. If your session later expires, you'll only see a single "Reconnect Google" button — not this whole flow again.
+## Google Calendar and Drive setup
 
-If you see "Signed in, but Drive isn't responding," it usually means the Drive API wasn't enabled in step 5 — reconnect after enabling it.
+Google integration is optional. The app uses the Google Identity Services client library and requests these OAuth scopes:
 
----
+- `https://www.googleapis.com/auth/calendar.events` — create/delete calendar events associated with dated tasks.
+- `https://www.googleapis.com/auth/drive.appdata` — read/write app data in the app-specific Drive folder.
 
-## How sync works
+### 1. Configure Google Cloud
 
-| Action | What happens |
-|--------|-------------|
-| Assign a date to a task | Auto-creates an all-day event in Google Calendar |
-| Complete or delete a task | Its Calendar event is removed (retried automatically if the first attempt fails) |
-| Date changed | Event recreated in Calendar |
-| Sign in on a new device | App finds your stable Drive file (or recovers from an older version's file) and restores all tasks |
-| Two devices edit independently | Each **task** is merged individually by whichever edit is newest — not a whole-list overwrite |
-| A task is deleted on one device | A tombstone record propagates the deletion to your other devices instead of the task reappearing |
-| Reopen the app / switch back to it | Syncs automatically — no manual step needed |
-| Pull down at the top of a list | Manual sync, if you want to force it |
+1. Open the [Google Cloud Console](https://console.cloud.google.com/).
+2. Select or create a project.
+3. Under **APIs & Services → Library**, enable **Google Calendar API** and **Google Drive API**.
+4. Under **Google Auth Platform**, configure the app's branding and audience/consent settings.
+5. Create an OAuth 2.0 Client ID with application type **Web application**.
+6. Add this exact origin under **Authorized JavaScript origins**:
+   `https://jayeshbhagat7.github.io`
 
----
+   For GitHub Pages, the origin is the host only; do not include `/braindump/` or a trailing path.
+7. Configure the app's public domain and links:
+   - App homepage: `https://jayeshbhagat7.github.io/braindump/`
+   - Privacy Policy: `https://jayeshbhagat7.github.io/braindump/privacy.html`
+   - Terms of Service: `https://jayeshbhagat7.github.io/braindump/terms.html`
+8. If Google requires domain verification, follow the verification instructions shown in Google Auth Platform. OAuth testing/publishing requirements depend on the audience and requested scopes.
 
-## Using the app
+### 2. Connect Google in the app
 
-- **🏠 Today** — Overdue, due today, and the next 7 days
-- **📥 Inbox** — Braindump anything, unfiled. Auto-archives after 7 days if not moved to a project
-- **📁 Browse** — Projects (with sub-projects and sections), Labels, Favorites
-- **📅 Upcoming** — Week strip + expandable month grid with task-count dots
-- **🎛️ Filters & Labels** — Built-in smart filters, your saved custom filters, and all labels
-- **🧭 Eisenhower Matrix** — Do First / Schedule / Delegate / Eliminate, set per-task from its Details pills
-- **🕸️ Web of Thoughts** — Projects/labels as connection clusters; jump between related dumps via 🔗 chips
-- **🌟 Goals** — Tasks tagged with a Goal Timeline
-- **✅ Done** — Completed (undo available) and Archived (restore available)
-- **⚙️ Settings** — Google sync, Projects, Labels, JSON Backup/Restore
+1. Open the live app over HTTPS.
+2. Open **Settings**.
+3. Paste the OAuth Web Client ID (ending in `.apps.googleusercontent.com`) and save it.
+4. Choose **Sign in with Google** and approve the requested Calendar and Drive access.
+5. Confirm the connection status in Settings.
 
-**Quick Add** — type naturally, or tap the Date/Priority/Labels pills:
-- `today`, `tomorrow`, `next week`, a weekday name, or `in 3 days`
-- `p1`–`p4` for priority
-- `@ProjectName` / `/SectionName` to file it
-- `#label` — matching existing labels pop up to tap-complete
+If Drive sync does not work, confirm that the Google Drive API is enabled and that the authorized JavaScript origin exactly matches `https://jayeshbhagat7.github.io`.
 
-**Organizing tasks into sub-tasks:**
-- Long-press a task to select it, then **⇥ Indent** (attaches under whichever task is above it) or **⇤ Outdent** (promotes one level up) from the action bar — the reliable option.
-- Or drag the selected task onto another task's row; a floating preview shows what will happen before you drop.
+## How storage and sync work
 
-**Priorities:** P1 (critical) → P2 (high) → P3 (medium) → P4 (low). Overdue tasks without a manual priority auto-escalate (⬆) the longer they sit.
+- The app stores tasks and settings in the current browser's `localStorage`.
+- Google Drive sync is optional; local use does not require a Google account.
+- When connected, the app can read/write its data file in Drive's app-specific `appDataFolder`.
+- The app includes timestamp-based sync logic and manual sync controls. It is **not** a real-time collaboration system, and simultaneous edits on different devices can overwrite one another.
+- Google Calendar events are separate from task storage. Verify important appointments directly in Google Calendar.
+- Export JSON backups regularly, especially before changing or clearing browser data, switching devices, or updating the app.
+- Disconnecting or revoking Google access does not automatically guarantee deletion of existing data in Drive or Calendar.
 
-**Recurring tasks:** Daily / Weekly / Monthly / Yearly — completing one auto-creates the next occurrence.
+## Known limitations
 
-**`*Heading` trick:** start a task's text with `*` (e.g. `*Materials`) to turn it into a bold, non-completable title row — useful for labeling a group of tasks without it being an action item itself.
+- No push notifications or guaranteed reminders. Tasks do not trigger a dependable background alert at a chosen time.
+- No multi-user collaboration, task assignment, or shared-project workflow.
+- Sync is not a conflict-free, field-by-field merge. Concurrent edits on different devices can result in one version replacing another.
+- Browser storage can be cleared by the user, browser settings, or device maintenance. Drive sync and JSON export should not be treated as infallible backups.
+- Calendar API/network/authentication failures may prevent an event from being created or deleted immediately.
+- Monthly recurrence near the end of a month can behave unexpectedly for dates that do not exist in shorter months.
+- Service worker caching does not make Google API calls or all third-party libraries available offline.
 
----
+## Privacy and terms
 
-## Known gaps (not yet solved in this build)
+The public policy pages are part of the published site:
 
-Worth knowing about before relying on this for site-critical data:
+- [Privacy Policy](https://jayeshbhagat7.github.io/braindump/privacy.html)
+- [Terms of Service](https://jayeshbhagat7.github.io/braindump/terms.html)
 
-1. **No field-by-field conflict merge.** If you edit the *exact same task* on two devices before either one syncs, whichever edit has the later timestamp wins for that task as a whole — there's no prompt to merge individual field changes.
-2. **Kanban board doesn't show sub-task nesting.** Cards are flat per column; drag-indenting is a list-view feature only.
-3. **A sub-task with its own due date may not always render nested under its parent** in Today/Upcoming if the parent doesn't independently match that same view's filter — it'll still show up, just not indented in place.
-4. **Section reordering uses ▲▼ buttons, not a drag handle** — an intentional simplification alongside the card drag-and-drop, to avoid stacking two independent drag systems in one view.
-5. **Recurring monthly tasks** from month-end dates (e.g. the 31st) may shift unexpectedly in shorter months — standard JS date-rollover behavior, not explicitly handled.
-6. **No push notifications/reminders.** The Reminders concept from Todoist isn't built — there's no background mechanism to fire a notification at a given time yet.
-7. **No vision board.** Mentioned early on, never fully specified, not built.
-8. **Occasional Google re-prompts are still possible.** This app has no backend, so it can't hold a true long-lived refresh token — the background token refresh substantially reduces how often you'll see a reconnect prompt, but can't guarantee zero, especially if your browser restricts third-party cookies to accounts.google.com.
+Review these documents whenever app behavior or data handling changes. They should accurately describe the deployed build and actual practices.
 
----
+## License
 
-## Files in this package
-
-```
-index.html    — The full app (single-file React build)
-manifest.json — Makes it installable as an Android PWA
-sw.js         — Service worker (offline caching, cache version gtd-v7)
-icon.svg      — App icon
-README.md     — This file
-```
+No license is specified in this README. Unless a license is added to the repository, do not assume that the code is offered under an open-source license.
