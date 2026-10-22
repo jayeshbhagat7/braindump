@@ -167,7 +167,22 @@ const gcal={
   _h(){return{'Authorization':'Bearer '+_tok,'Content-Type':'application/json'}},
   async create(t){if(!_tok||!t.dueDate)return null;try{const r=await fetch(GCAL+'/calendars/primary/events',{method:'POST',headers:gcal._h(),body:JSON.stringify({summary:t.text,start:{date:t.dueDate},end:{date:t.dueDate},description:[t.priority&&('P: '+t.priority),(t.labels&&t.labels.length)&&('Labels: '+t.labels.join(', ')),t.project&&('Project: '+t.project)].filter(Boolean).join('\n')})});if(r.status===401){gcal.invalidate();return null}return(await r.json()).id||null}catch{return null}},
   // Returns true on success (including "already gone" 404/410) so callers can distinguish a real failure worth retrying
-  async del(eid){if(!eid)return true;if(!_tok)return false;try{const r=await fetch(GCAL+'/calendars/primary/events/'+eid,{method:'DELETE',headers:gcal._h()});if(r.status===401){gcal.invalidate();return false}return r.ok||r.status===404||r.status===410}catch{return false}}
+  async del(eid){if(!eid)return true;if(!_tok)return false;try{const r=await fetch(GCAL+'/calendars/primary/events/'+eid,{method:'DELETE',headers:gcal._h()});if(r.status===401){gcal.invalidate();return false}return r.ok||r.status===404||r.status===410}catch{return false}},
+  async identify(){
+    if(!_tok)return null;
+    try{
+      const r=await fetch('https://www.googleapis.com/oauth2/v3/userinfo',{headers:gcal._h()});
+      if(!r.ok)return null;
+      const d=await r.json();
+      return{sub:d.sub||'',email:d.email||'',name:d.name||'User',picture:d.picture||''};
+    }catch{return null}
+  },
+  signOut(){
+    if(window.google?.accounts?.oauth2&&_tok){try{google.accounts.oauth2.revoke(_tok,()=>{})}catch{}}
+    _tok=null;_tokExp=0;
+    if(_refreshTimer){clearTimeout(_refreshTimer);_refreshTimer=null}
+    ls.set('tok',null);ls.set('tok_exp',0);
+  }
 };
 // FIXED: stable file name + searches old version files for recovery
 const STABLE_FILE='gtd_braindump.json';
@@ -368,6 +383,7 @@ function App(){
   const [toast,setToast]=useState('');
   const [notifPerm,setNotifPerm]=useState(()=>(typeof Notification!=='undefined'?Notification.permission:'unsupported'));
   const [ready,setReady]=useState(false);
+  const [currentUser,setCurrentUser]=useState(()=>ls.get('current_user',null));
   const [favorites,setFavorites]=useState(()=>ls.get('favorites',[])); // array of {type:'project'|'label',id,name}
   // Theme — swaps the CSS variables driving the accent color scale
   const [theme,setThemeRaw]=useState(()=>ls.get('theme','emerald'));
@@ -553,7 +569,44 @@ function App(){
     for(const eid of pendingCalDel){const ok=await gcal.del(eid);if(!ok)remaining.push(eid)}
     setPendingCalDel(remaining);ls.set('pendingCalDel',remaining);
   };
-  useEffect(()=>{if(!gcalOk)return;runDriveSync();flushCalDel()},[gcalOk]);
+  useEffect(()=>{
+    if(!gcalOk)return;
+    (async()=>{
+      const user=await gcal.identify();
+      if(!user){runDriveSync();flushCalDel();return}
+      const prevSub=ls.get('last_user_sub','');
+      ls.set('current_user',user);
+      ls.set('last_user_sub',user.sub);
+      setCurrentUser(user);
+      // Namespace Drive file-id cache per user so two accounts on the same device
+      // never accidentally open each other's Drive file.
+      const fidKey='drv_fid_'+user.sub;
+      if(!ls.get(fidKey,null)){
+        const legacy=ls.get('drv_stable_fid',null);
+        if(legacy&&!prevSub)ls.set(fidKey,legacy);
+      }
+      ls.set('drv_stable_fid',ls.get(fidKey,null)||null);
+      if(prevSub&&prevSub!==user.sub){
+        // ── Different Google account ─────────────────────────────────────────
+        // Clear all personal localStorage so this user starts clean.
+        // Drive sync immediately below will restore their own data.
+        ['tasks','labels','projects_v2','sections','tombstones',
+         'mission','missionHistory','missionTs','circleItems','circleTs',
+         'lastWeeklyReview','reviewHistory','gratitude','customFilters',
+         'favorites','tasks_ts','subtask_migrated_v1',
+         'pendingCalDel','notifiedReminders','drv_stable_fid',
+        ].forEach(k=>localStorage.removeItem(k));
+        setTasks([]);
+        setLabels(['Personal','Work','Health','Finance']);
+        setProjects([]);setSections([]);
+        setMission('');setMissionHistory([]);
+        setCircleItems([]);setLastWeeklyReview(null);setReviewHistory([]);
+        setGratitude([]);setCustomFilters([]);setFavorites([]);
+        showToast('👋 Signed in as '+user.name+' — loading your data…',5000);
+      }
+      runDriveSync();flushCalDel();
+    })();
+  },[gcalOk]);
   // Keep devices in sync automatically: re-check Drive whenever this tab/app becomes visible again
   // (e.g. switching from desktop back to your phone), and every ~40s while it stays open and visible.
   useEffect(()=>{
@@ -857,7 +910,7 @@ function App(){
         {view.tab==='circle' &&<CircleView items={circleItems} onSave={persistCircle} onPromote={(text,id)=>{persistCircle(circleItems.filter(i=>i.id!==id));setQuickAddPrefill(text);setShowQuickAdd(true)}}/>}
         {view.tab==='review' &&<WeeklyReviewView inboxCount={inbox.length} overdueCount={overdueTasks.length} overdueTasks={overdueTasks} goalTasks={goals} circleItems={circleItems} weekPool={[...todayTasks,...upcomingTasks]} onToggleFocus={toggleWeeklyFocus} onNav={nav} onFinish={finishWeeklyReview} lastWeeklyReview={lastWeeklyReview} reviewHistory={reviewHistory}/>}
         {view.tab==='done'    &&<DoneView done={doneTasks} arch={archivedTasks} onUndo={uncomplete} onRestore={restore} onDel={del}/>}
-        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={usedLabels} onRemoveLabel={removeLabelEverywhere} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON} theme={theme} setTheme={setTheme} notifPerm={notifPerm} onRequestNotif={requestNotifPermission}/>}
+        {view.tab==='settings'&&<SettingsView cid={gcalCid} setCid={v=>{setGcalCid(v);ls.set('gcal_cid',v)}} connected={gcalOk} driveOk={driveOk} onConnect={()=>gcal.connect(true)} onDisconnect={()=>{setGcalOk(false);setDriveOk(false);_tok=null;ls.set('tok',null);ls.set('drv_stable_fid',null)}} onRetryDrive={runDriveSync} onSync={syncAll} syncing={syncing} labels={usedLabels} onRemoveLabel={removeLabelEverywhere} projects={projects} onSavePrjs={persistPrjs} taskCount={tasks.length} tasks={tasks} onExport={exportJSON} onImport={importJSON} theme={theme} setTheme={setTheme} notifPerm={notifPerm} onRequestNotif={requestNotifPermission} currentUser={currentUser} onSignOut={()=>{gcal.signOut();ls.set('current_user',null);ls.set('last_user_sub','');setCurrentUser(null);setGcalOk(false);setDriveOk(false);showToast('👋 Signed out');}}/>}
         </div>
       </div>
 
@@ -3154,7 +3207,7 @@ function TaskModal({task,labels,projects,allTasks,gcalOk,onSave,onClose,onDel,on
     </div>
   );
 }
-function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRetryDrive,onSync,syncing,labels,onRemoveLabel,projects,onSavePrjs,taskCount,tasks,onExport,onImport,theme,setTheme,notifPerm,onRequestNotif}){
+function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRetryDrive,onSync,syncing,labels,onRemoveLabel,projects,onSavePrjs,taskCount,tasks,onExport,onImport,theme,setTheme,notifPerm,onRequestNotif,currentUser,onSignOut}){
   const [inp,setInp]=useState(cid);
   const [newPrjName,setNewPrjName]=useState('');
   const [newPrjColor,setNewPrjColor]=useState(PC[0]);
@@ -3168,6 +3221,42 @@ function SettingsView({cid,setCid,connected,driveOk,onConnect,onDisconnect,onRet
   return(
     <div className="pb-24">
       <div className="px-4 pt-5 pb-4"><h2 className="text-3xl font-black text-stone-900">Settings</h2></div>
+
+      {/* ── Signed-in user profile card ──────────────────────────────── */}
+      {currentUser&&(
+        <div className="bg-white mx-0 mb-4 border-y border-stone-100">
+          <div className="px-4 py-4 flex items-center gap-3">
+            {/* Avatar */}
+            {currentUser.picture
+              ? <img src={currentUser.picture} alt="" className="w-12 h-12 rounded-full flex-shrink-0 object-cover" referrerPolicy="no-referrer"/>
+              : <div className="w-12 h-12 rounded-full flex-shrink-0 bg-[var(--accent-600)] flex items-center justify-center text-white font-black text-lg">
+                  {(currentUser.name||'U')[0].toUpperCase()}
+                </div>
+            }
+            {/* Name + email */}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-black text-stone-900 truncate">{currentUser.name}</p>
+              <p className="text-xs text-stone-400 truncate">{currentUser.email}</p>
+              <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">✓ Signed in — data is yours alone</p>
+            </div>
+            {/* Sign out */}
+            <button onClick={onSignOut}
+              className="flex-shrink-0 px-3 py-2 bg-stone-100 text-stone-600 rounded-xl text-xs font-bold active:bg-stone-200 border border-stone-200">
+              Sign out
+            </button>
+          </div>
+          <div className="mx-4 mb-3 bg-stone-50 rounded-xl p-3 text-xs text-stone-500 space-y-0.5">
+            <p>🔒 <strong>Your data is private.</strong> Tasks, projects and labels are stored in your own Google Drive — no one else can see them.</p>
+            <p>👥 To switch accounts, sign out and sign in with a different Google account.</p>
+          </div>
+        </div>
+      )}
+      {!currentUser&&connected&&(
+        <div className="mx-4 mb-4 bg-amber-50 border border-amber-200 rounded-2xl p-3">
+          <p className="text-xs font-bold text-amber-700">⚠️ Could not read your Google profile</p>
+          <p className="text-xs text-amber-600 mt-0.5">Reconnect to identify your account and isolate your data.</p>
+        </div>
+      )}
       {!isHttps&&<div className="mx-4 mb-4 bg-amber-50 border border-amber-200 rounded-2xl p-3"><p className="text-xs font-bold text-amber-700">⚠️ Deploy to HTTPS for Google sync</p></div>}
       {/* Reminders */}
       <div className="bg-white mx-0 mb-4 border-y border-stone-100">
