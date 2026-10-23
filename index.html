@@ -373,7 +373,8 @@ function App(){
   const [quickAddPrefill,setQuickAddPrefill]=useState('');
   const openQuickAddForSection=sectionId=>{setQuickAddSectionId(sectionId);setShowQuickAdd(true)};
   const [searchQ,setSearchQ]=useState('');
-  const [gcalCid,setGcalCid]=useState(()=>ls.get('gcal_cid',''));
+   const APP_CLIENT_ID='497768618092-berv3gusor604rbu3o5mcs83hqf3b2u3.apps.googleusercontent.com';
+  const [gcalCid,setGcalCid]=useState(()=>ls.get('gcal_cid',APP_CLIENT_ID));
   const [gcalOk,setGcalOk]=useState(false);
   const [pendingCalDel,setPendingCalDel]=useState(()=>ls.get('pendingCalDel',[]));
   const queueCalDel=eid=>{if(!eid)return;setPendingCalDel(p=>{if(p.includes(eid))return p;const n=[...p,eid];ls.set('pendingCalDel',n);return n})};
